@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+from jsputils import paths as jsputils_paths
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -21,6 +23,20 @@ FIGURE_DIR = OUTPUT_DIR / 'figure_outputs'
 GSN_DIR = os.environ.get('DNFFA_GSN_DIR', '/home/jovyan/work/DropboxSandbox/GSN')
 
 IMAGENET_CLASS_LABELS = REPO_DIR / 'PROJECT_DNFFA' / 'NOTEBOOKS' / 'imagenet_class_labels.json'
+
+# Weights that are not fetched automatically: the VGGFace AlexNet and the ImageNet
+# readout checkpoints (``<readout description>/checkpoint.pth``). jsputils looks for
+# them in ``paths.weight_savedir()`` / ``paths.training_checkpoint_dir()``; both are
+# redirected here so the jsputils submodule can stay unmodified.
+WEIGHTS_DIR = Path(os.environ.get('DNFFA_WEIGHTS_DIR', REPO_DIR / 'weights'))
+
+
+def _weights_dir():
+    return str(WEIGHTS_DIR)
+
+
+jsputils_paths.weight_savedir = _weights_dir
+jsputils_paths.training_checkpoint_dir = _weights_dir
 
 
 def analysis_dir(name):
