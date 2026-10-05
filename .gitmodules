@@ -1,0 +1,3 @@
+[submodule "jsputils"]
+	path = jsputils
+	url = https://github.com/jacob-prince/jsputils
