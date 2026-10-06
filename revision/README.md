@@ -7,6 +7,7 @@ revision/
 ├── dnffa/                     # shared code
 │   ├── config.py              # output paths, subjects, ROIs, domain colours, layer lists, NSD settings
 │   ├── nsd.py                 # load ROIs/betas, NSD images, GSN noise ceilings
+│   ├── gist.py                # Python port of the MATLAB Gabor / GIST-PC features (HELPERS/Code-GistModel)
 │   ├── plotting.py            # despine/layer-axis styling, scatter_corr, noise-ceiling band
 │   └── stats.py               # finite-masked Pearson r, paired t-tests vs. first model
 └── scripts/
@@ -112,7 +113,9 @@ python revision/scripts/03_encoding.py --model alexnet-vggface
 python revision/scripts/03_encoding.py --method ols --rois FFA-1 PPA EBA VWFA-1 \
     --savedir "$DNFFA_OUTPUT_DIR/analysis_outputs/3-Encoding/alexnet-barlow-twins-ols"
 python revision/scripts/07_low_level_models.py export
-#   -> run PROJECT_DNFFA/HELPERS/DNFFA_extract_gist.m in MATLAB (first set `imdir` to analysis_outputs/3d-LowLevel/)
+python revision/scripts/07_low_level_models.py features   # Python port, ~1.5 s/image
+#   or the original MATLAB code (same output files):
+#   python revision/scripts/07_low_level_models.py features --backend matlab --matlab-cmd /path/to/matlab
 python revision/scripts/07_low_level_models.py encode
 python revision/scripts/06_noise_ceilings.py
 
@@ -132,6 +135,7 @@ Fixes so the code runs against the current `jsputils`, with no effect on results
 - 3/7: the unused `gpu_encoding` import is removed because that module no longer exists.
 - 6: the notebook used `DNN` without ever defining it, only to call `get_encoding_voxels`. `nsd.roi_voxels` does the same computation directly.
 - 7: `nsdorg.get_NSD_train_test_images` no longer exists, and `scipy.io` was never imported. `nsd.load_nsd_images` exports the images in the same COCO order that `load_encoding_data` uses for the brain data. The old function is gone, so I couldn't check its image order.
+- 7: the Gabor / GIST-PC features are computed by the `features` stage instead of running `DNFFA_extract_gist.m` by hand. By default it uses a Python port (`dnffa/gist.py`); `--backend matlab` calls the original `computeGaborAndGistFeatures.m` with the same parameters. On test images the port matches the original `.m` code run in Octave to ~1e-14, except that some GistPC columns have flipped signs (PC signs are arbitrary). The original quirks are kept on purpose: the GIST PCA is fit separately on each image set, so train and test PCs are not aligned, and it is not mean-centered. Because of that, GistPC test scores depend on which arbitrary sign each PC gets, so they can differ from the paper's numbers. Gabor features are unaffected.
 
 Changes with no effect on results:
 

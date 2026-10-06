@@ -194,3 +194,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# model weights and torch hub cache (see revision/README.md)
+weights/
