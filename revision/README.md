@@ -60,6 +60,14 @@ pip install --ignore-requires-python --no-deps \
     "laion-fmri @ git+https://github.com/ViCCo-Group/LAION-fMRI.git@main"
 pip install awscli
 
+# libGL: opencv (imported by ffcv) needs libGL.so.1, which the klab compute nodes don't have.
+# The solver can't add it (every libglx build pins a newer xorg-libx11), so unpack the
+# libraries into the env by hand; they work with the env's libX11 1.8.4.
+(cd "$(mktemp -d)" && for p in libglvnd libglx libgl; do
+    curl -fsSLO https://conda.anaconda.org/conda-forge/linux-64/$p-1.7.0-ha4b6fd6_0.conda
+    unzip -oq $p-1.7.0-ha4b6fd6_0.conda && zstd -dc pkg-$p-*.tar.zst | tar -x
+done && cp -a lib/libGL* "$CONDA_PREFIX/lib/")
+
 # check (cuda is True on a GPU node)
 python -c "from jsputils import classes; import torch; print(torch.__version__, torch.cuda.is_available())"
 python -c "import laion_fmri, numpy; print(laion_fmri.__file__, numpy.__version__)"
@@ -84,12 +92,13 @@ laion-fmri download --help
 
 ### Paths
 
-Data locations (NSD, stimulus sets, …) are set in `jsputils/jsputils/paths.py`. Three environment variables control the rest:
+Data locations (NSD, …) are set in `jsputils/jsputils/paths.py`. Four environment variables control the rest:
 
 | variable | default | purpose |
 |---|---|---|
 | `DNFFA_OUTPUT_DIR` | `revision/outputs` | root for `analysis_outputs/` and `figure_outputs/`. Point it at `PROJECT_DNFFA/NOTEBOOKS` to reuse results the notebooks already cached. |
 | `DNFFA_GSN_DIR` | `/home/jovyan/work/DropboxSandbox/GSN` | checkout of [GSN](https://github.com/cvnlab/GSN), needed for noise ceilings |
+| `DNFFA_DATA_DIR` | `revision/data` | stimulus sets (`vpnl-floc`, `classic-categ`), one folder per set. `dnffa.config` points jsputils' `image_set_dir()` here; `selective_unit_dir()` goes to `analysis_outputs/selective_units`. |
 | `DNFFA_WEIGHTS_DIR` | `weights` (repo root) | VGGFace AlexNet and ImageNet readout checkpoints. `dnffa.config` points jsputils' `weight_savedir()` and `training_checkpoint_dir()` here. |
 
 ### Model weights
@@ -190,6 +199,7 @@ Fixes so the code runs against the current `jsputils`, with no effect on results
 Changes with no effect on results:
 
 - 2: probe images are collected while the data streams in, instead of first loading all 50k validation images (about 30 GB). The selected images are identical. The loader is still read to the end, and 6 images per category are still saved: as in the notebook, the 6th is the first image of the next class.
+- 1: `--skip-classic-categ` skips the parts that need the `classic-categ` images (the probe-set heatmap and the classic-categ panels of the trained vs. untrained t-value plot). Selective units are always defined on `vpnl-floc`, so the pies and per-layer summaries are unaffected.
 - 2: the randomized control uses numpy's global random state, which comes from the `np.random.seed(0)` inside `scatter_corr`. `main()` therefore keeps the notebook's cell order. `--skip-examples` and `--skip-randomized` are optional shortcuts that leave the notebook path.
 - Figures the notebooks only showed inline are now saved too: readout weights, full layer summaries, the 2D trajectory plot, and the noise-ceiling plot. Notebook 6 drew the noise-ceiling plot twice in slightly different styles; only the second version is kept.
 - Figures are drawn with the non-interactive Agg backend. With matplotlib-inline ≥ 0.1.4 (the environment pins 0.1.6), the inline backend does not override rcParams either, so saved figures are the same.

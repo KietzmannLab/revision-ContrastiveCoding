@@ -23,8 +23,13 @@ COMPARISON_MODELS = ['alexnet-barlow-twins', 'alexnet-ipcl', 'alexnet-supervised
 FT = 24
 
 
-def localize(model_name, imageset=config.FLOC_IMAGESET):
+def localize(model_name, imageset=config.FLOC_IMAGESET, device='cuda:0'):
     DNN = classes.DNNModel(model_name)
+    # jsputils' localizer calls get_floc_features with device='cuda:0' hard-coded;
+    # route it to the requested device instead (e.g. 'cpu' on nodes without a usable GPU)
+    get_floc_features = DNN.get_floc_features
+    DNN.get_floc_features = lambda images, field='floc_features', invert=False, **_: \
+        get_floc_features(images, field=field, device=device, invert=invert)
     DNN.find_selective_units(imageset, overwrite=False, verbose=False, FDR_p=config.FDR_P)
     return DNN
 
@@ -85,10 +90,10 @@ def plot_selectivity_pies(DNN, model_name, savedir):
         save(savedir / f'{model_name}_{layer}-selectivity-pie.tiff')
 
 
-def plot_selectivity_by_layer(savedir):
+def plot_selectivity_by_layer(savedir, device):
     """Supp. Fig. 1: proportion of selective units per layer for several models."""
     for model_name in COMPARISON_MODELS:
-        DNN = localize(model_name)
+        DNN = localize(model_name, device=device)
         layers = [l for l in DNN.selective_units[SUMMARY_DOMAINS[0]]
                   if 'flatten' not in l and 'dropout' not in l]
 
@@ -101,16 +106,15 @@ def plot_selectivity_by_layer(savedir):
         save(savedir / f'{model_name}_{config.FLOC_IMAGESET}_summary.tiff')
 
 
-def plot_trained_vs_untrained_tvals(savedir):
+def plot_trained_vs_untrained_tvals(savedir, device, image_sets=('vpnl-floc', 'classic-categ')):
     """Supp. Fig. 1: mean t-values of selective units, trained vs. untrained model."""
     model_names = ['alexnet-barlow-twins', 'alexnet-barlow-twins-random']
-    image_sets = ['vpnl-floc', 'classic-categ']
 
     floc_info = dict()
     for model_name in model_names:
         floc_info[model_name] = dict()
         for image_set in image_sets:
-            DNN = localize(model_name, image_set)
+            DNN = localize(model_name, image_set, device)
             floc_info[model_name][image_set] = DNN.selective_units
 
     layer = 'fc6'
@@ -141,22 +145,27 @@ def main():
     parser.add_argument('--probe-imageset', default='classic-categ')
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--skip-supplementary', action='store_true')
+    parser.add_argument('--skip-classic-categ', action='store_true',
+                        help='skip everything that needs the classic-categ images: the probe-set heatmap '
+                             'and the classic-categ panels of the trained vs. untrained t-value plot')
     args = parser.parse_args()
 
     savedir = config.figure_dir('Figure1-Categ-Selective-Units')
 
-    DNN = localize(args.model)
+    DNN = localize(args.model, device=args.device)
     print_tval_summary(DNN)
 
-    probe = classes.ImageSet(args.probe_imageset, transforms=DNN.transforms)
-    DNN.get_floc_features(probe, field='probe_features', device=args.device, invert=False)
+    if not args.skip_classic_categ:
+        probe = classes.ImageSet(args.probe_imageset, transforms=DNN.transforms)
+        DNN.get_floc_features(probe, field='probe_features', device=args.device, invert=False)
+        plot_activation_heatmap(DNN, args.model, savedir)
 
-    plot_activation_heatmap(DNN, args.model, savedir)
     plot_selectivity_pies(DNN, args.model, savedir)
 
     if not args.skip_supplementary:
-        plot_selectivity_by_layer(savedir)
-        plot_trained_vs_untrained_tvals(savedir)
+        plot_selectivity_by_layer(savedir, args.device)
+        image_sets = ['vpnl-floc'] if args.skip_classic_categ else ['vpnl-floc', 'classic-categ']
+        plot_trained_vs_untrained_tvals(savedir, args.device, image_sets)
 
 
 if __name__ == '__main__':
