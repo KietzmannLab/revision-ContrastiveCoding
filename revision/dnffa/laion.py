@@ -297,13 +297,16 @@ class LaionROI:
                                                           ['image_name', 'stim_idx', 'dataset']].reset_index()
 
     def _load_images(self, trial_indices, image_size):
-        images = []
-        for t in trial_indices:
+        images = None
+        for i, t in enumerate(trial_indices):
             img = self.subject.sub.images.get(int(t), as_displayed=True)
             if image_size is not None:
                 img = img.resize((image_size, image_size))
-            images.append(np.asarray(img, dtype=np.uint8))
-        return np.stack(images)
+            img = np.asarray(img, dtype=np.uint8)
+            if images is None:  # preallocate once (stimuli are all the same size)
+                images = np.empty((len(trial_indices),) + img.shape, dtype=np.uint8)
+            images[i] = img
+        return images
 
 
 def load_roi(subject, roi, ncsnr_threshold=NCSNR_THRESHOLD, partitions=None, image_size=None):
