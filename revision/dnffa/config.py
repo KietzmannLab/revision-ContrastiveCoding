@@ -38,6 +38,22 @@ def _weights_dir():
 jsputils_paths.weight_savedir = _weights_dir
 jsputils_paths.training_checkpoint_dir = _weights_dir
 
+# Stimulus sets (``vpnl-floc``, ``classic-categ``, ...), one folder per image set.
+DATA_DIR = Path(os.environ.get('DNFFA_DATA_DIR', REVISION_DIR / 'data'))
+
+
+def _image_set_dir():
+    return str(DATA_DIR)
+
+
+# Cache for the DNN localizer results (one .npy per model / image set / domain).
+def _selective_unit_dir():
+    return str(analysis_dir('selective_units'))
+
+
+jsputils_paths.image_set_dir = _image_set_dir
+jsputils_paths.selective_unit_dir = _selective_unit_dir
+
 
 def analysis_dir(name):
     path = ANALYSIS_DIR / name
