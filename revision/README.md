@@ -7,6 +7,7 @@ revision/
 ├── dnffa/                     # shared code
 │   ├── config.py              # output paths, subjects, ROIs, domain colours, layer lists, NSD settings
 │   ├── nsd.py                 # load ROIs/betas, NSD images, GSN noise ceilings
+│   ├── laion.py               # LAION-fMRI loader with the same ROI interface as nsd.py
 │   ├── gist.py                # Python port of the MATLAB Gabor / GIST-PC features (HELPERS/Code-GistModel)
 │   ├── plotting.py            # despine/layer-axis styling, scatter_corr, noise-ceiling band
 │   └── stats.py               # finite-masked Pearson r, paired t-tests vs. first model
@@ -54,8 +55,31 @@ pip install --no-build-isolation -r /tmp/revision-pip.txt fastprogress==1.0.3
 # jsputils
 pip install -e jsputils
 
+# LAION-fMRI loader (see below)
+pip install --ignore-requires-python --no-deps \
+    "laion-fmri @ git+https://github.com/ViCCo-Group/LAION-fMRI.git@main"
+pip install awscli
+
 # check (cuda is True on a GPU node)
 python -c "from jsputils import classes; import torch; print(torch.__version__, torch.cuda.is_available())"
+python -c "import laion_fmri, numpy; print(laion_fmri.__file__, numpy.__version__)"
+```
+
+#### LAION-fMRI
+
+The [LAION-fMRI](https://github.com/ViCCo-Group/LAION-fMRI) package requires Python ≥ 3.10 and numpy ≥ 1.24. This env has Python 3.9 and numpy 1.23.5, so a plain `pip install` is refused, or it upgrades numpy and breaks torch 1.13. Neither floor is actually needed. The package's offline test suite (500 tests, `pytest -m "not network"`) passes on this env. That's why the install skips both checks:
+
+- `--ignore-requires-python` skips the Python version check. Modules that use `X | None` hints also import `from __future__ import annotations`, so they run on 3.9.
+- `--no-deps` keeps numpy at 1.23.5. The other dependencies (h5py, nibabel, pandas, Pillow) are already in the env at versions that meet the requirements. `awscli` is the only one missing, so it's installed separately. It only adds packages and changes none of the existing ones.
+
+`pip check` will keep reporting `laion-fmri 0.1.0 has requirement numpy>=1.24`. That's expected.
+
+Downloads run `python -m awscli s3 sync` (anonymous, us-west-2). With `http(s)_proxy` set to the university proxy (e.g. by `~/startup_conda.sh`), parallel S3 downloads can fail with `Failed to connect to proxy URL`. If the node has direct internet access, unset the proxy variables before downloading:
+
+```bash
+unset http_proxy https_proxy
+laion-fmri config --help    # set the data directory
+laion-fmri download --help
 ```
 
 ### Paths
@@ -122,6 +146,32 @@ python revision/scripts/06_noise_ceilings.py
 python revision/scripts/04_encoding_plots.py
 python revision/scripts/05_content_channeling.py
 ```
+
+## LAION-fMRI
+
+`dnffa/laion.py` loads LAION-fMRI (via the `laion_fmri` package) into objects with the same attributes as NSD's `BrainRegion`, so `jsputils`' `EncodingProcedure` and the noise-ceiling code work on it unchanged:
+
+```python
+from dnffa import laion
+ROI = laion.load_roi(laion.load_subject('sub-01'), 'FFA-1')   # cf. nsd.load_roi(nsd.load_subject('subj01'), 'FFA-1')
+encoder = classes.EncodingProcedure(ROI, DNN, method='lasso', positive=True, alphas=[0.1])
+```
+
+`python -m dnffa.laion` (run from `revision/`) prints the sessions, image sets and ROIs without loading betas.
+
+| | NSD (`dnffa.nsd`) | LAION-fMRI (`dnffa.laion`) |
+|---|---|---|
+| subjects | `subj01`–`subj08` | `sub-01`, `sub-03`, `sub-05`, `sub-06`, `sub-07` |
+| ROIs | 11, incl. `FBA-1`, `FBA-2`, `OWFA` | 9: a single `FBA`, no `OWFA` |
+| train / val | `nonshared1000-3rep-batch0/1` | `unique1000-4rep-batch0/1`: same selection rule, 1000 unique images × 4 reps each |
+| test | `special515`: 515 images × 3 reps | `shared-12rep`: 866 images seen 12× by every subject |
+| voxel filter | ncsnr > 0.3 | ncsnr > 0.3, with ncsnr recovered from the `Noiseceiling4rep` map |
+| betas | z-scored per voxel within session | same |
+
+Notes:
+- **Speed:** the first `load_subject(...).load_betas()` reads all 30 sessions once (about 30 s each). It caches z-scored betas for the union of the 9 ROIs (~665 MB per subject) in `analysis_outputs/laion-fmri`; later calls load that cache.
+- **Volumetric data:** voxels are assigned to `lh`/`rh` by the sign of their world x coordinate. `EncodingProcedure` concatenates the two, so this does not affect results.
+- **Failed fits:** voxels with failed GLMsingle fits (NaN betas) are dropped from the ROI. The two sessions checked for sub-01 had none.
 
 ## Differences from the notebooks
 
