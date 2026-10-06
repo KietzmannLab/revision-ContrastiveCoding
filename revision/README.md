@@ -13,6 +13,7 @@ revision/
 │   └── stats.py               # finite-masked Pearson r, paired t-tests vs. first model
 └── scripts/
     ├── download_models.py        # pre-download public model weights (run once)
+    ├── make_imagenet_ffcv.py     # write the ImageNet val set to FFCV for 02 (run once)
     ├── 00_train_readout.py       # 0-Train-Readout.ipynb
     ├── 01_dnn_localizer.py       # 1-DNN-Localizer.ipynb      -> Figure 1, Supp. Fig. 1
     ├── 02_lesioning.py           # 2-Lesioning.ipynb          -> Figure 2
@@ -92,13 +93,15 @@ laion-fmri download --help
 
 ### Paths
 
-Data locations (NSD, …) are set in `jsputils/jsputils/paths.py`. Four environment variables control the rest:
+Data locations (NSD, …) are set in `jsputils/jsputils/paths.py`. Six environment variables control the rest:
 
 | variable | default | purpose |
 |---|---|---|
 | `DNFFA_OUTPUT_DIR` | `revision/outputs` | root for `analysis_outputs/` and `figure_outputs/`. Point it at `PROJECT_DNFFA/NOTEBOOKS` to reuse results the notebooks already cached. |
 | `DNFFA_GSN_DIR` | `/home/jovyan/work/DropboxSandbox/GSN` | checkout of [GSN](https://github.com/cvnlab/GSN), needed for noise ceilings |
 | `DNFFA_DATA_DIR` | `revision/data` | stimulus sets (`vpnl-floc`, `classic-categ`), one folder per set. `dnffa.config` points jsputils' `image_set_dir()` here; `selective_unit_dir()` goes to `analysis_outputs/selective_units`. |
+| `DNFFA_IMAGENET_VAL_DIR` | `/share/klab/datasets/imagenet/val` | raw ImageNet val images (one folder per wnid), input to `make_imagenet_ffcv.py` |
+| `DNFFA_IMAGENET_FFCV` | `revision/data/imagenet1k-ffcv/imagenet1k_val_..._includes_index.ffcv` | ImageNet val set in FFCV format, used by 02. `dnffa.config` points jsputils' `ffcv_imagenet1k_valset()` here. |
 | `DNFFA_WEIGHTS_DIR` | `weights` (repo root) | VGGFace AlexNet and ImageNet readout checkpoints. `dnffa.config` points jsputils' `weight_savedir()` and `training_checkpoint_dir()` here. |
 
 ### Model weights
@@ -137,6 +140,7 @@ Every script has `--help`. Run them from any directory. Steps that take a long t
 ```bash
 python revision/scripts/00_train_readout.py --sparse-pos     # readout used by 02
 python revision/scripts/01_dnn_localizer.py
+python revision/scripts/make_imagenet_ffcv.py                 # ImageNet val -> FFCV, needed by 02
 python revision/scripts/02_lesioning.py
 
 # encoding models (outputs feed 04)

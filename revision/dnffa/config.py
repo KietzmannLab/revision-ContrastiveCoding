@@ -54,6 +54,20 @@ def _selective_unit_dir():
 jsputils_paths.image_set_dir = _image_set_dir
 jsputils_paths.selective_unit_dir = _selective_unit_dir
 
+# ImageNet val set in FFCV format, used for the lesioning accuracies. Built from the raw
+# val images by ``scripts/make_imagenet_ffcv.py``.
+IMAGENET_VAL_DIR = Path(os.environ.get('DNFFA_IMAGENET_VAL_DIR', '/share/klab/datasets/imagenet/val'))
+IMAGENET_FFCV_VALSET = Path(os.environ.get(
+    'DNFFA_IMAGENET_FFCV',
+    DATA_DIR / 'imagenet1k-ffcv' / 'imagenet1k_val_jpg_q100_s256_lmax512_crop_includes_index.ffcv'))
+
+
+def _ffcv_imagenet1k_valset():
+    return str(IMAGENET_FFCV_VALSET)
+
+
+jsputils_paths.ffcv_imagenet1k_valset = _ffcv_imagenet1k_valset
+
 
 def analysis_dir(name):
     path = ANALYSIS_DIR / name
