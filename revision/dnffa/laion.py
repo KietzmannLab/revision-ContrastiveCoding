@@ -31,6 +31,7 @@ Differences from NSD that cannot be avoided:
   ROI; scikit-learn cannot fit NaNs.
 """
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -60,10 +61,19 @@ ROI_DOMAIN = {'OFA': 'faces', 'FFA-1': 'faces', 'FFA-2': 'faces',
               'EBA': 'bodies', 'FBA': 'bodies',
               'VWFA-1': 'characters', 'VWFA-2': 'characters'}
 
+ROI_GROUPS = {'Face-selective ROIs': {'ROIs': ['OFA', 'FFA-1', 'FFA-2'], 'domain': 'faces'},
+              'Body-selective ROIs': {'ROIs': ['FBA', 'EBA'], 'domain': 'bodies'},
+              'Scene-selective ROIs': {'ROIs': ['OPA', 'PPA'], 'domain': 'scenes'},
+              'Word-selective ROIs': {'ROIs': ['VWFA-1', 'VWFA-2'], 'domain': 'characters'}}
+
 # Default partitions, analogous to NSD's nonshared1000-3rep-batch0/1 and special515
 TRAIN_IMAGESET = 'unique1000-4rep-batch0'
 VAL_IMAGESET = 'unique1000-4rep-batch1'
 TEST_IMAGESET = 'shared-12rep'
+
+# The stimuli are 1000 x 1000. The analysis scripts resize them to the NSD size: the DNNs
+# resize to 224 anyway, and the Gabor / GIST filter bank is built for the image size.
+ENCODING_IMAGE_SIZE = 425
 
 # Noise ceiling map used to derive ncsnr, and the number of trials it was computed for
 NC_DESC = 'Noiseceiling4rep'
@@ -88,6 +98,13 @@ def initialize(data_dir=DATA_DIR):
 
 def partition_dict(train=TRAIN_IMAGESET, val=VAL_IMAGESET, test=TEST_IMAGESET):
     return {'train': train, 'val': val, 'test': test}
+
+
+def _save_atomic(fn, save, *args, **kwargs):
+    """Write via a temporary file, so parallel jobs never read a half-written cache."""
+    tmp = fn.with_name(f'{fn.stem}.{os.getpid()}.tmp{fn.suffix}')
+    save(tmp, *args, **kwargs)
+    os.replace(tmp, fn)
 
 
 def ncsnr_from_noise_ceiling(nc_percent, n_reps=NC_NREPS):
@@ -155,6 +172,57 @@ def image_set(subj, name):
     raise ValueError(f'unknown LAION-fMRI image set: {name}')
 
 
+def trial_indices(subj, imageset):
+    """Sorted image names and their (images x repetitions) trial indices, reps in chronological order."""
+    metadata = trial_table(subj)
+    names, n_reps = image_set(subj, imageset)
+    trials = metadata[metadata['image_name'].isin(names)]
+    grouped = trials.groupby('image_name').apply(lambda t: t.index.to_numpy())
+    trial_idx = np.stack(grouped.loc[names].values)
+    assert trial_idx.shape == (len(names), n_reps), (imageset, trial_idx.shape)
+    return names, trial_idx
+
+
+def image_set_images(subj, imageset, image_size=None, laion_sub=None):
+    """images x H x W x 3 (uint8) stimuli of an image set, in the order of ``trial_indices``.
+
+    Loading takes ~50 ms per image, so resized sets are cached under
+    ``analysis_outputs/laion-fmri`` (shared sets once for all subjects).
+    """
+    owner = 'shared' if imageset.startswith('shared') else subj
+    cache_fn = None
+    if image_size is not None:
+        cache_fn = config.analysis_dir(CACHE_SUBDIR) / f'{owner}_{imageset}_images-{image_size}.npy'
+        if cache_fn.exists():
+            return np.load(cache_fn)
+
+    if laion_sub is None:
+        from laion_fmri.subject import load_subject as _load
+        initialize()
+        laion_sub = _load(subj)
+
+    _, trial_idx = trial_indices(subj, imageset)
+    images = None
+    for i, t in enumerate(trial_idx[:, 0]):
+        img = laion_sub.images.get(int(t), as_displayed=True)
+        if image_size is not None:
+            img = img.resize((image_size, image_size))
+        img = np.asarray(img, dtype=np.uint8)
+        if images is None:  # preallocate once (stimuli are all the same size)
+            images = np.empty((len(trial_idx),) + img.shape, dtype=np.uint8)
+        images[i] = img
+
+    if cache_fn is not None:
+        _save_atomic(cache_fn, np.save, images)
+    return images
+
+
+def load_images(subj, partitions, image_size=None):
+    """Stimulus images for a subject, keyed by partition (no brain data loaded); cf. nsd.load_nsd_images."""
+    return {partition: image_set_images(subj, imageset, image_size)
+            for partition, imageset in partitions.items()}
+
+
 # ---------------------------------------------------------------------------
 # Subject: z-scored betas for the union of ROIs, cached to disk
 # ---------------------------------------------------------------------------
@@ -214,8 +282,8 @@ class LaionSubject:
             betas[start:start + n] = stats.zscore(ses_betas.astype(float), axis=0)
             start += n
 
-        np.save(betas_fn, betas)
-        np.savez(voxels_fn, union=union)
+        _save_atomic(betas_fn, np.save, betas)
+        _save_atomic(voxels_fn, np.savez, union=union)
         self._betas = self._betas_dict(betas, union, masks)
         return self._betas
 
@@ -281,32 +349,16 @@ class LaionROI:
 
         self.brain_data, self.image_data, self.image_metadata = {}, {}, {}
         for partition, imageset in partition_dict.items():
-            names, n_reps = image_set(self.subj, imageset)
-            trials = metadata[metadata['image_name'].isin(names)]
-            # images x repetitions trial indices, repetitions in chronological order
-            grouped = trials.groupby('image_name').apply(lambda t: t.index.to_numpy())
-            trial_idx = np.stack(grouped.loc[names].values)
-            assert trial_idx.shape == (len(names), n_reps), (imageset, trial_idx.shape)
+            names, trial_idx = trial_indices(self.subj, imageset)
+            n_reps = trial_idx.shape[1]
 
             self.brain_data[partition] = {
                 hemi: np.asarray(betas[trial_idx.ravel()][:, self.voxel_idx[hemi]], dtype=np.float32)
                 .reshape(len(names), n_reps, -1)
                 for hemi in ['lh', 'rh']}
-            self.image_data[partition] = self._load_images(trial_idx[:, 0], image_size)
+            self.image_data[partition] = image_set_images(self.subj, imageset, image_size, self.subject.sub)
             self.image_metadata[partition] = metadata.loc[trial_idx[:, 0],
                                                           ['image_name', 'stim_idx', 'dataset']].reset_index()
-
-    def _load_images(self, trial_indices, image_size):
-        images = None
-        for i, t in enumerate(trial_indices):
-            img = self.subject.sub.images.get(int(t), as_displayed=True)
-            if image_size is not None:
-                img = img.resize((image_size, image_size))
-            img = np.asarray(img, dtype=np.uint8)
-            if images is None:  # preallocate once (stimuli are all the same size)
-                images = np.empty((len(trial_indices),) + img.shape, dtype=np.uint8)
-            images[i] = img
-        return images
 
 
 def load_roi(subject, roi, ncsnr_threshold=NCSNR_THRESHOLD, partitions=None, image_size=None):

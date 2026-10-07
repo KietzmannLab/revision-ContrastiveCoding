@@ -1,9 +1,9 @@
-"""Fit sparse positive encoding models from selective DNN units to NSD ROIs.
+"""Fit sparse positive encoding models from selective DNN units to NSD (or LAION-fMRI) ROIs.
 
 Converted from PROJECT_DNFFA/NOTEBOOKS/3-Encoding.ipynb.
 
-Writes one CSV per (subject, ROI, layer, domain) to ``analysis_outputs/3-Encoding``;
-existing CSVs are skipped unless --overwrite is given.
+Writes one CSV per (subject, ROI, layer, domain) to ``analysis_outputs/3-Encoding``
+(``3-Encoding-laion`` with --dataset laion); existing CSVs are skipped unless --overwrite is given.
 """
 
 import argparse
@@ -16,17 +16,17 @@ import numpy as np  # noqa: E402
 from fastprogress import progress_bar  # noqa: E402
 from jsputils import classes  # noqa: E402
 
-from dnffa import config, nsd  # noqa: E402
+from dnffa import config, datasets  # noqa: E402
 
 DOMAINS = ['faces', 'scenes', 'bodies', 'characters', 'objects']
 
 
-def domains_for(model_name, roi):
+def domains_for(model_name, roi, roi_domain):
     """vggface: whole layers only. Untrained model: only the ROI's preferred domain."""
     if 'vggface' in model_name:
         return ['layer']
     if 'random' in model_name:
-        return [config.ROI_DOMAIN[roi]]
+        return [roi_domain[roi]]
     return DOMAINS
 
 
@@ -36,14 +36,14 @@ def main():
     parser.add_argument('--method', default='lasso', choices=['lasso', 'ols'])
     parser.add_argument('--alpha', type=float, default=0.1,
                         help='lasso penalty (paper: 0.1 for trained, 0.001 for untrained models)')
-    parser.add_argument('--rois', nargs='+', default=config.ROI_LIST)
-    parser.add_argument('--subjects', nargs='+', default=config.SUBJECTS)
+    datasets.add_arguments(parser)
     parser.add_argument('--savedir', type=Path, default=None,
-                        help='defaults to analysis_outputs/3-Encoding')
+                        help='defaults to analysis_outputs/3-Encoding (3-Encoding-laion for --dataset laion)')
     parser.add_argument('--overwrite', action='store_true')
     args = parser.parse_args()
+    ds = datasets.from_args(parser, args)
 
-    savedir = args.savedir or config.analysis_dir(config.ENCODING_SUBDIR)
+    savedir = args.savedir or ds.analysis_dir(config.ENCODING_SUBDIR)
     savedir.mkdir(parents=True, exist_ok=True)
     layers = config.encoding_layers(args.model)
     positive = args.method == 'lasso'
@@ -55,11 +55,11 @@ def main():
 
     for roi in args.rois:
         for subj in progress_bar(args.subjects):
-            ROI = nsd.load_roi(nsd.load_subject(subj), roi)
+            ROI = ds.load_roi(ds.load_subject(subj), roi)
             encoder = classes.EncodingProcedure(ROI, DNN, method=args.method, positive=positive, alphas=alphas)
             encoder.encode_layers(str(savedir),
                                   layers=np.flip(layers),
-                                  domains=domains_for(args.model, roi),
+                                  domains=domains_for(args.model, roi, ds.roi_domain),
                                   overwrite=args.overwrite)
 
 

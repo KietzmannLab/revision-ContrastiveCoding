@@ -2,10 +2,12 @@
 
 Converted from PROJECT_DNFFA/NOTEBOOKS/7-LowLevelModels.ipynb.
 
-Three stages, all reading/writing ``analysis_outputs/3d-LowLevel``:
+Three stages, all reading/writing ``analysis_outputs/3d-LowLevel`` (``3d-LowLevel-laion``
+with --dataset laion; encoding results go to ``3-Encoding`` / ``3-Encoding-laion``):
   export    - save each subject's train images and the shared test images as .mat files
   features  - compute Gabor and GIST-PC features from the exported images; writes
-              ``{subj}_{GistPC,Gabor}.mat`` / ``special515_{GistPC,Gabor}.mat``
+              ``{subj}_{GistPC,Gabor}.mat`` / ``{test set}_{GistPC,Gabor}.mat``
+              (test set: special515 for NSD, shared-12rep for LAION-fMRI)
   encode    - fit OLS encoding models from the GIST/Gabor features to each ROI
 
 ``features --backend`` picks the implementation:
@@ -13,7 +15,7 @@ Three stages, all reading/writing ``analysis_outputs/3d-LowLevel``:
   matlab  - the original PROJECT_DNFFA/HELPERS/Code-GistModel/computeGaborAndGistFeatures.m,
             called with the same parameters as DNFFA_extract_gist.m. Set the executable with
             --matlab-cmd (or DNFFA_MATLAB); octave-cli works too. The MATLAB code expects
-            425x425 images (the NSD size).
+            425x425 images (the NSD size; LAION-fMRI images are exported at that size).
 """
 
 import argparse
@@ -29,37 +31,37 @@ import scipy.io as sio  # noqa: E402
 from fastprogress import progress_bar  # noqa: E402
 from jsputils import classes  # noqa: E402
 
-from dnffa import config, gist, nsd  # noqa: E402
+from dnffa import config, datasets, gist  # noqa: E402
 
 FEATURE_SPACES = ['GistPC', 'Gabor']
 GIST_CODE_DIR = config.REPO_DIR / 'PROJECT_DNFFA' / 'HELPERS' / 'Code-GistModel'
 
 
-def export_images(feature_dir, subjs):
+def export_images(ds, feature_dir, subjs):
     for subj in progress_bar(subjs):
-        test_fn = feature_dir / f'{config.TEST_IMAGESET}_images.mat'
-        train_fn = feature_dir / f'{subj}_train-{config.TRAIN_IMAGESET}_images.mat'
+        test_fn = feature_dir / f'{ds.test_imageset}_images.mat'
+        train_fn = feature_dir / f'{subj}_train-{ds.train_imageset}_images.mat'
 
         partitions = {}
         if not train_fn.exists():
-            partitions['train'] = config.TRAIN_IMAGESET
+            partitions['train'] = ds.train_imageset
         if not test_fn.exists():
-            partitions['test'] = config.TEST_IMAGESET  # shared across subjects
+            partitions['test'] = ds.test_imageset  # shared across subjects
         if not partitions:
             print(subj, 'skipping, already exists')
             continue
 
-        images = nsd.load_nsd_images(subj, partitions)
+        images = ds.load_images(subj, partitions)
         for partition, fn in [('train', train_fn), ('test', test_fn)]:
             if partition in images:
                 sio.savemat(fn, {'images': images[partition]})
                 print(subj, partition, images[partition].shape)
 
 
-def image_sets(subjs):
+def image_sets(ds, subjs):
     """(name, exported image file) for the test set and each subject's train set."""
-    sets = [(config.TEST_IMAGESET, f'{config.TEST_IMAGESET}_images.mat')]
-    sets += [(subj, f'{subj}_train-{config.TRAIN_IMAGESET}_images.mat') for subj in subjs]
+    sets = [(ds.test_imageset, f'{ds.test_imageset}_images.mat')]
+    sets += [(subj, f'{subj}_train-{ds.train_imageset}_images.mat') for subj in subjs]
     return sets
 
 
@@ -90,11 +92,11 @@ def matlab_features(image_path, out_fns, summary_fn, matlab_cmd):
     subprocess.run(cmd, check=True)
 
 
-def compute_features(feature_dir, subjs, overwrite, backend='python', matlab_cmd='matlab'):
+def compute_features(ds, feature_dir, subjs, overwrite, backend='python', matlab_cmd='matlab'):
     if backend == 'matlab' and shutil.which(matlab_cmd) is None:
         raise FileNotFoundError(f'MATLAB executable not found: {matlab_cmd} (set --matlab-cmd or DNFFA_MATLAB)')
 
-    for name, image_fn in image_sets(subjs):
+    for name, image_fn in image_sets(ds, subjs):
         out_fns = {fs: feature_dir / f'{name}_{fs}.mat' for fs in FEATURE_SPACES}
         if all(fn.exists() for fn in out_fns.values()) and not overwrite:
             print(name, 'skipping, already exists')
@@ -115,14 +117,14 @@ def load_gist_gabor_features(feature_dir, name, feature_space):
     return struct['featureMatrix']
 
 
-def encode(feature_dir, encoding_dir, subjs, rois, overwrite):
+def encode(ds, feature_dir, encoding_dir, subjs, rois, overwrite):
     for feature_space in FEATURE_SPACES:
-        test_features = load_gist_gabor_features(feature_dir, config.TEST_IMAGESET, feature_space)
+        test_features = load_gist_gabor_features(feature_dir, ds.test_imageset, feature_space)
         print(feature_space, 'test features:', test_features.shape)
 
         for roi in rois:
             for subj in progress_bar(subjs):
-                ROI = nsd.load_roi(nsd.load_subject(subj), roi)
+                ROI = ds.load_roi(ds.load_subject(subj), roi)
                 train_features = load_gist_gabor_features(feature_dir, subj, feature_space)
                 encoder = classes.EncodingProcedureGistGabor(ROI, feature_space, train_features, test_features,
                                                              method='ols', positive=False, alphas=[None])
@@ -132,23 +134,23 @@ def encode(feature_dir, encoding_dir, subjs, rois, overwrite):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('stage', choices=['export', 'features', 'encode'])
-    parser.add_argument('--rois', nargs='+', default=config.ROI_LIST)
-    parser.add_argument('--subjects', nargs='+', default=config.SUBJECTS)
+    datasets.add_arguments(parser)
     parser.add_argument('--overwrite', action='store_true')
     parser.add_argument('--backend', choices=['python', 'matlab'], default='python',
                         help='features stage: Python port or the original MATLAB code')
     parser.add_argument('--matlab-cmd', default=os.environ.get('DNFFA_MATLAB', 'matlab'),
                         help='MATLAB (or octave-cli) executable for --backend matlab')
     args = parser.parse_args()
+    ds = datasets.from_args(parser, args)
 
-    feature_dir = config.analysis_dir(config.LOW_LEVEL_SUBDIR)
+    feature_dir = ds.analysis_dir(config.LOW_LEVEL_SUBDIR)
 
     if args.stage == 'export':
-        export_images(feature_dir, args.subjects)
+        export_images(ds, feature_dir, args.subjects)
     elif args.stage == 'features':
-        compute_features(feature_dir, args.subjects, args.overwrite, args.backend, args.matlab_cmd)
+        compute_features(ds, feature_dir, args.subjects, args.overwrite, args.backend, args.matlab_cmd)
     else:
-        encode(feature_dir, config.analysis_dir(config.ENCODING_SUBDIR), args.subjects, args.rois, args.overwrite)
+        encode(ds, feature_dir, ds.analysis_dir(config.ENCODING_SUBDIR), args.subjects, args.rois, args.overwrite)
 
 
 if __name__ == '__main__':

@@ -67,17 +67,21 @@ def import_rsa_noise_ceiling():
     return rsa_noise_ceiling
 
 
-def noise_ceiling_path(roi, subj, test_imageset=config.TEST_IMAGESET, ncsnr_threshold=config.NCSNR_THRESHOLD):
-    nc_dir = config.analysis_dir(config.NOISE_CEILING_SUBDIR)
+def noise_ceiling_path(roi, subj, test_imageset=config.TEST_IMAGESET, ncsnr_threshold=config.NCSNR_THRESHOLD,
+                       subdir=config.NOISE_CEILING_SUBDIR):
+    nc_dir = config.analysis_dir(subdir)
     return nc_dir / f'GSN-NC_{roi}_{subj}_{test_imageset}_nc-{ncsnr_threshold}.npy'
 
 
-def load_noise_ceilings(roi_list=config.ROI_LIST, subjs=config.SUBJECTS):
-    """DataFrame with columns ROI, Subject, Univariate, RSA (averaged over GSN resamples)."""
+def load_noise_ceilings(roi_list=config.ROI_LIST, subjs=config.SUBJECTS, **path_kwargs):
+    """DataFrame with columns ROI, Subject, Univariate, RSA (averaged over GSN resamples).
+
+    ``path_kwargs`` go to ``noise_ceiling_path`` (another dataset's test set / output folder).
+    """
     rows = []
     for roi in roi_list:
         for subj in subjs:
-            fn = noise_ceiling_path(roi, subj)
+            fn = noise_ceiling_path(roi, subj, **path_kwargs)
             if not fn.exists():
                 print(fn, 'does not exist')
                 continue

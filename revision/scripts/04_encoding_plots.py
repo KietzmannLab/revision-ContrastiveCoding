@@ -4,7 +4,8 @@ Converted from PROJECT_DNFFA/NOTEBOOKS/4-Encoding-Plots.ipynb.
 
 Requires the outputs of 03_encoding.py (lasso; and --method ols into
 ``3-Encoding/alexnet-barlow-twins-ols`` for the OLS comparison), 06_noise_ceilings.py
-and 07_low_level_models.py.
+and 07_low_level_models.py, all run with the same --dataset. With --dataset laion, inputs
+and figures use the ``-laion`` folders (e.g. ``3-Encoding-laion``, ``Figure4-Encoding-laion``).
 """
 
 import argparse
@@ -17,7 +18,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import seaborn as sns  # noqa: E402
 
-from dnffa import config, nsd  # noqa: E402
+from dnffa import config, datasets, nsd  # noqa: E402
 from dnffa.plotting import despine, noise_ceiling_band, plt, save  # noqa: E402
 from dnffa.stats import pairwise_ttest_with_first  # noqa: E402
 
@@ -50,7 +51,7 @@ def is_face_roi(roi):
 # Loading
 # ---------------------------------------------------------------------------
 
-def load_encoding_results(loaddirs, model_names, rois, subjs=config.SUBJECTS):
+def load_encoding_results(loaddirs, model_names, rois, subjs):
     nc = config.NCSNR_THRESHOLD
     df_list = []
     for loaddir in loaddirs:
@@ -145,14 +146,17 @@ def plot_full_layer_summaries(combined_df, noise_ceilings, savedir):
             save(savedir / f'full-layer-summary-{model_name}-{metric}.png')
 
 
-def plot_best_layer_violins(df_max, noise_ceilings, savedir, metrics=('veUnivar', 'veRSA')):
+def plot_best_layer_violins(df_max, noise_ceilings, savedir, ds, metrics=('veUnivar', 'veRSA')):
     """Fig. 4: test-set prediction per ROI for each model at its best (val-selected) layer."""
-    n_tests = 36  # (3 * 4) + (8 * 3)
+    # one test per non-first model and ROI; NSD: (3 * 4) + (8 * 3) = 36
+    n_face = sum(is_face_roi(roi) for roi in ds.rois)
+    n_tests = (n_face * (len(MODEL_COLORS['face']) - 1) +
+               (len(ds.rois) - n_face) * (len(MODEL_COLORS['non-face']) - 1))
     ttest_alpha = 0.05 / n_tests  # bonferroni
 
     for metric in metrics:
         df = df_max[metric][['subj', 'ROI', 'model_name', 'domain', 'veUnivar', 'veRSA']]
-        fig, axs = plt.subplots(1, 11, figsize=(20, 8), sharey=True)
+        fig, axs = plt.subplots(1, len(ds.rois), figsize=(20, 8), sharey=True)
 
         for roi, ax in zip(df['ROI'].unique(), axs.flatten()):
             df_roi = df[df['ROI'] == roi]
@@ -161,7 +165,7 @@ def plot_best_layer_violins(df_max, noise_ceilings, savedir, metrics=('veUnivar'
             model_data = []
             for model in these_colors:
                 if 'barlow-twins' in model:
-                    sel = (df_roi['model_name'] == model) & (df_roi['domain'] == config.ROI_DOMAIN[roi])
+                    sel = (df_roi['model_name'] == model) & (df_roi['domain'] == ds.roi_domain[roi])
                 else:
                     sel = df_roi['model_name'] == model
                 model_data.append(df_roi[sel][metric].values)
@@ -195,7 +199,7 @@ def plot_best_layer_violins(df_max, noise_ceilings, savedir, metrics=('veUnivar'
         save(savedir / f'encoding-best-layers-{metric}.tiff')
 
 
-def plot_ols_vs_lasso(combined_df_ols, noise_ceilings, savedir, model_name='alexnet-barlow-twins'):
+def plot_ols_vs_lasso(combined_df_ols, noise_ceilings, savedir, roi_domain, model_name='alexnet-barlow-twins'):
     df = combined_df_ols[(combined_df_ols['model_name'] == model_name) & (combined_df_ols['partition'] == 'val')]
     fg = 0
     for analysis in ['Univar', 'RSA']:
@@ -206,7 +210,7 @@ def plot_ols_vs_lasso(combined_df_ols, noise_ceilings, savedir, model_name='alex
                 plt.figure(figsize=(16, 7))
                 ax = plt.gca()
                 roi_df = df[(df['ROI'] == roi) & (df['method'] == method)]
-                plot_domain_layer_curves(ax, roi_df, metric, PLOT_DOMAINS, highlight=config.ROI_DOMAIN[roi])
+                plot_domain_layer_curves(ax, roi_df, metric, PLOT_DOMAINS, highlight=roi_domain[roi])
                 noise_ceiling_band(ax, nsd.noise_ceiling_range(noise_ceilings, roi, metric), len(LAYERS))
 
                 plt.xticks(rotation=90, fontsize=FT)
@@ -221,7 +225,7 @@ def plot_ols_vs_lasso(combined_df_ols, noise_ceilings, savedir, model_name='alex
                 fg += 1
 
 
-def plot_top_layer_indices(df_max, savedir, metrics=('veUnivar', 'veRSA')):
+def plot_top_layer_indices(df_max, savedir, roi_groups, metrics=('veUnivar', 'veRSA')):
     """Which layer was selected (on val) as most predictive, per subject and ROI."""
     for model_name in DNN_MODELS:
         layer_list = config.encoding_layers(model_name)
@@ -233,7 +237,7 @@ def plot_top_layer_indices(df_max, savedir, metrics=('veUnivar', 'veRSA')):
             this_df['layer_num'] = this_df['layer'].map(layer_mapping)
 
             fig, axs = plt.subplots(1, 4, figsize=(12, 4), sharey=True)
-            for ax, roi_group in zip(axs, config.ROI_GROUPS.values()):
+            for ax, roi_group in zip(axs, roi_groups.values()):
                 rois = roi_group['ROIs']
                 domain = 'layer' if 'vggface' in model_name else roi_group['domain']
 
@@ -262,28 +266,31 @@ def plot_top_layer_indices(df_max, savedir, metrics=('veUnivar', 'veRSA')):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    datasets.add_arguments(parser, rois_and_subjects=False)
     parser.add_argument('--skip-ols', action='store_true', help='skip the OLS vs. sparse-positive comparison')
     args = parser.parse_args()
+    ds = datasets.from_args(parser, args)
 
-    loaddir = config.analysis_dir(config.ENCODING_SUBDIR)
-    savedir = config.figure_dir('Figure4-Encoding')
+    loaddir = ds.analysis_dir(config.ENCODING_SUBDIR)
+    savedir = ds.figure_dir('Figure4-Encoding')
 
-    combined_df = load_encoding_results([loaddir], MODEL_NAMES, config.ROI_LIST)
-    noise_ceilings = nsd.load_noise_ceilings()
+    combined_df = load_encoding_results([loaddir], MODEL_NAMES, ds.rois, ds.subjects)
+    noise_ceilings = ds.load_noise_ceilings()
 
     plot_full_layer_summaries(combined_df, noise_ceilings, savedir)
 
     metrics = ['veUnivar', 'veRSA', 'cUnivar', 'cRSA']
     df_max = {metric: find_max_score_layers(combined_df, metric) for metric in metrics}
 
-    plot_best_layer_violins(df_max, noise_ceilings, savedir)
+    plot_best_layer_violins(df_max, noise_ceilings, savedir, ds)
 
     if not args.skip_ols:
         loaddir_ols = loaddir / 'alexnet-barlow-twins-ols'
-        combined_df_ols = load_encoding_results([loaddir, loaddir_ols], ['alexnet-barlow-twins'], EXAMPLE_ROIS)
-        plot_ols_vs_lasso(combined_df_ols, noise_ceilings, savedir)
+        combined_df_ols = load_encoding_results([loaddir, loaddir_ols], ['alexnet-barlow-twins'], EXAMPLE_ROIS,
+                                                ds.subjects)
+        plot_ols_vs_lasso(combined_df_ols, noise_ceilings, savedir, ds.roi_domain)
 
-    plot_top_layer_indices(df_max, savedir)
+    plot_top_layer_indices(df_max, savedir, ds.roi_groups)
 
 
 if __name__ == '__main__':

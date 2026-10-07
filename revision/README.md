@@ -8,6 +8,7 @@ revision/
 │   ├── config.py              # output paths, subjects, ROIs, domain colours, layer lists, NSD settings
 │   ├── nsd.py                 # load ROIs/betas, NSD images, GSN noise ceilings
 │   ├── laion.py               # LAION-fMRI loader with the same ROI interface as nsd.py
+│   ├── datasets.py            # --dataset {nsd,laion} for scripts 03, 04, 06, 07
 │   ├── gist.py                # Python port of the MATLAB Gabor / GIST-PC features (HELPERS/Code-GistModel)
 │   ├── plotting.py            # despine/layer-axis styling, scatter_corr, noise-ceiling band
 │   └── stats.py               # finite-masked Pearson r, paired t-tests vs. first model
@@ -109,7 +110,7 @@ Data locations (NSD, …) are set in `jsputils/jsputils/paths.py`. Six environme
 | variable | default | purpose |
 |---|---|---|
 | `DNFFA_OUTPUT_DIR` | `revision/outputs` | root for `analysis_outputs/` and `figure_outputs/`. Point it at `PROJECT_DNFFA/NOTEBOOKS` to reuse results the notebooks already cached. |
-| `DNFFA_GSN_DIR` | `/home/jovyan/work/DropboxSandbox/GSN` | checkout of [GSN](https://github.com/cvnlab/GSN), needed for noise ceilings |
+| `DNFFA_GSN_DIR` | `/home/jovyan/work/DropboxSandbox/GSN` | checkout of [GSN](https://github.com/cvnlab/GSN), needed for noise ceilings (`git clone https://github.com/cvnlab/GSN ~/GSN`; GSN is imported from the checkout, no install needed) |
 | `DNFFA_DATA_DIR` | `revision/data` | stimulus sets (`vpnl-floc`, `classic-categ`), one folder per set. `dnffa.config` points jsputils' `image_set_dir()` here; `selective_unit_dir()` goes to `analysis_outputs/selective_units`. |
 | `DNFFA_IMAGENET_VAL_DIR` | `/share/klab/datasets/imagenet/val` | raw ImageNet val images (one folder per wnid), input to `make_imagenet_ffcv.py` |
 | `DNFFA_IMAGENET_FFCV` | `revision/data/imagenet1k-ffcv/imagenet1k_val_..._includes_index.ffcv` | ImageNet val set in FFCV format, used by 02. `dnffa.config` points jsputils' `ffcv_imagenet1k_valset()` here. |
@@ -183,6 +184,37 @@ encoder = classes.EncodingProcedure(ROI, DNN, method='lasso', positive=True, alp
 
 `python -m dnffa.laion` (run from `revision/`) prints the sessions, image sets and ROIs without loading betas.
 
+### Running the encoding analyses (Fig. 4) on LAION-fMRI
+
+Scripts 03, 04, 06 and 07 take `--dataset {nsd,laion}` (default `nsd`, which is unchanged). With `--dataset laion` they use the subjects, ROIs and image sets in the table below, and read/write sibling folders with a `-laion` suffix (`analysis_outputs/3-Encoding-laion`, `3c-NoiseCeilings-laion`, `3d-LowLevel-laion`, `figure_outputs/Figure4-Encoding-laion`, `NoiseCeilings-laion`), so NSD and LAION results never mix. `--rois` / `--subjects` default to all of the dataset's ROIs / subjects; NSD-only names such as `FBA-1` are rejected.
+
+03 extracts DNN features on `cuda:0`, so run it on a GPU node. The other steps run on CPU.
+
+```bash
+export DNFFA_GSN_DIR=~/GSN                    # git clone https://github.com/cvnlab/GSN ~/GSN
+GPU="srun -p klab-gpu --gres=gpu:1 -c 16 --mem=64G ~/.conda/envs/revision-cu128/bin/python"
+
+# 03: encoding models (the first run also builds the beta and image caches)
+$GPU revision/scripts/03_encoding.py --dataset laion
+$GPU revision/scripts/03_encoding.py --dataset laion --model alexnet-barlow-twins-random --alpha 0.001
+$GPU revision/scripts/03_encoding.py --dataset laion --model alexnet-vggface
+$GPU revision/scripts/03_encoding.py --dataset laion --method ols --rois FFA-1 PPA EBA VWFA-1 \
+    --savedir "${DNFFA_OUTPUT_DIR:-revision/outputs}/analysis_outputs/3-Encoding-laion/alexnet-barlow-twins-ols"
+
+# 07: Gabor / GIST-PC baselines
+python revision/scripts/07_low_level_models.py export   --dataset laion
+python revision/scripts/07_low_level_models.py features --dataset laion
+python revision/scripts/07_low_level_models.py encode   --dataset laion
+
+# 06: GSN noise ceilings on the shared-12rep test set
+python revision/scripts/06_noise_ceilings.py --dataset laion
+
+# 04: Figure 4 (add --skip-ols if the OLS run above was skipped)
+python revision/scripts/04_encoding_plots.py --dataset laion
+```
+
+For one subject × ROI, 03 (one model, all layers and domains) took 4 min on an H100/RTX node, including building that subject's image cache; the 45 combinations take up to ~3 h per model. The three model runs can go in parallel; split further with `--subjects` / `--rois`.
+
 | | NSD (`dnffa.nsd`) | LAION-fMRI (`dnffa.laion`) |
 |---|---|---|
 | subjects | `subj01`–`subj08` | `sub-01`, `sub-03`, `sub-05`, `sub-06`, `sub-07` |
@@ -194,6 +226,8 @@ encoder = classes.EncodingProcedure(ROI, DNN, method='lasso', positive=True, alp
 
 Notes:
 - **Speed:** the first `load_subject(...).load_betas()` reads all 30 sessions once (about 30 s each). It caches z-scored betas for the union of the 9 ROIs (~665 MB per subject) in `analysis_outputs/laion-fmri`; later calls load that cache.
+- **Images:** the stimuli are 1000 × 1000. The scripts resize them to 425 × 425 (`laion.ENCODING_IMAGE_SIZE`, the NSD size): the DNNs resize to 224 anyway, and the Gabor / GIST filter bank is built for the image size. Loading takes ~50 ms per image, so resized image sets are cached next to the betas (`{sub-XX|shared}_{image set}_images-425.npy`, ~540 MB per 1000 images, ~6 GB for all subjects). Cache files are written atomically, so parallel jobs can share them.
+- **Fig. 4 statistics:** the Bonferroni correction counts one test per ROI and non-reference model: 36 for NSD as in the paper, 30 for LAION's 9 ROIs (3 face ROIs × 4 + 6 others × 3).
 - **Volumetric data:** voxels are assigned to `lh`/`rh` by the sign of their world x coordinate. `EncodingProcedure` concatenates the two, so this does not affect results.
 - **Failed fits:** voxels with failed GLMsingle fits (NaN betas) are dropped from the ROI. The two sessions checked for sub-01 had none.
 
