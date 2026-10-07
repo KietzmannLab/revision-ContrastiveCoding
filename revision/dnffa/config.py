@@ -5,6 +5,11 @@ from pathlib import Path
 
 from jsputils import paths as jsputils_paths
 
+# PyTorch >= 2.6 defaults torch.load to weights_only=True, which rejects the pickled
+# objects in some of the lab checkpoints. jsputils calls torch.load without the argument,
+# so restore the old default (read by torch at call time; no effect on torch 1.13).
+os.environ.setdefault('TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD', '1')
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -67,6 +72,27 @@ def _ffcv_imagenet1k_valset():
 
 
 jsputils_paths.ffcv_imagenet1k_valset = _ffcv_imagenet1k_valset
+
+
+# jsputils' DataLoaderFFCV always asks for 64 loader threads. Recent numba caps the thread
+# count at the CPUs the job may use (e.g. ``srun -c 16``) and raises above that, so cap the
+# request there. On the old env (numba 0.56 counts all cores of the node) nothing changes.
+def _cap_ffcv_loader_threads():
+    try:
+        import numba
+        from jsputils import validation
+    except ImportError:  # scripts that never touch ffcv
+        return
+    create_val_loader = validation.create_val_loader
+
+    def capped(val_dataset, indices=None, device='cuda:0', num_workers=64, *args, **kwargs):
+        num_workers = min(num_workers, numba.config.NUMBA_NUM_THREADS)
+        return create_val_loader(val_dataset, indices, device, num_workers, *args, **kwargs)
+
+    validation.create_val_loader = capped
+
+
+_cap_ffcv_loader_threads()
 
 
 def analysis_dir(name):

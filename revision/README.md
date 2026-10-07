@@ -74,6 +74,17 @@ python -c "from jsputils import classes; import torch; print(torch.__version__, 
 python -c "import laion_fmri, numpy; print(laion_fmri.__file__, numpy.__version__)"
 ```
 
+#### GPU env (`revision-cu128`)
+
+PyTorch 1.13 has no kernels for the klab GPUs (H100 sm_90, B200 sm_100, RTX PRO 6000 sm_120). It only runs on them through PTX JIT compilation, which takes long enough at startup that the lesioning script barely gets going. `environment/env_build_cu128.sh` builds a second env with the same analysis stack on PyTorch 2.7.1 / CUDA 12.8:
+
+```bash
+bash environment/env_build_cu128.sh    # -> ~/.conda/envs/revision-cu128
+srun -p klab-gpu --gres=gpu:1 -c 16 --mem=50G ~/.conda/envs/revision-cu128/bin/python revision/scripts/02_lesioning.py
+```
+
+Differences from the pinned env: Python 3.10, numpy 1.26.4, opencv 4 (ffcv 1.0.2 doesn't find opencv 5), cupy 13 (cupy 14 needs numpy 2), latest pycortex. `dnffa.config` handles two behaviour changes so jsputils stays unmodified: it restores `torch.load`'s old `weights_only=False` default, and it caps the ImageNet loader's 64 threads at the CPUs the job has (newer numba refuses more). Tested with `02_lesioning.py`: one ImageNet val pass takes ~10 s on an RTX PRO 6000.
+
 #### LAION-fMRI
 
 The [LAION-fMRI](https://github.com/ViCCo-Group/LAION-fMRI) package requires Python ≥ 3.10 and numpy ≥ 1.24. This env has Python 3.9 and numpy 1.23.5, so a plain `pip install` is refused, or it upgrades numpy and breaks torch 1.13. Neither floor is actually needed. The package's offline test suite (500 tests, `pytest -m "not network"`) passes on this env. That's why the install skips both checks:
