@@ -277,6 +277,8 @@ def load_probe_images(n_per_class=N_PROBE_PER_CLASS):
 
 
 def save_impaired_category_examples(results_cv, categories, savedir, n_categs=8):
+    savedir = savedir / 'impaired-examples'
+    savedir.mkdir(exist_ok=True)
     probe_images = load_probe_images()
     for domain in CV_DOMAINS:
         costs = results_cv['acc_splitA'] - results_cv[domain]['lsn_acc_splitA']
