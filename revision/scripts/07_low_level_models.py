@@ -58,9 +58,9 @@ def export_images(ds, feature_dir, subjs):
                 print(subj, partition, images[partition].shape)
 
 
-def image_sets(ds, subjs):
+def image_sets(ds, subjs, skip_test=False):
     """(name, exported image file) for the test set and each subject's train set."""
-    sets = [(ds.test_imageset, f'{ds.test_imageset}_images.mat')]
+    sets = [] if skip_test else [(ds.test_imageset, f'{ds.test_imageset}_images.mat')]
     sets += [(subj, f'{subj}_train-{ds.train_imageset}_images.mat') for subj in subjs]
     return sets
 
@@ -92,16 +92,17 @@ def matlab_features(image_path, out_fns, summary_fn, matlab_cmd):
     subprocess.run(cmd, check=True)
 
 
-def compute_features(ds, feature_dir, subjs, overwrite, backend='python', matlab_cmd='matlab'):
+def compute_features(ds, feature_dir, subjs, overwrite, backend='python', matlab_cmd='matlab', skip_test=False):
     if backend == 'matlab' and shutil.which(matlab_cmd) is None:
         raise FileNotFoundError(f'MATLAB executable not found: {matlab_cmd} (set --matlab-cmd or DNFFA_MATLAB)')
 
-    for name, image_fn in image_sets(ds, subjs):
+    for name, image_fn in image_sets(ds, subjs, skip_test):
         out_fns = {fs: feature_dir / f'{name}_{fs}.mat' for fs in FEATURE_SPACES}
         if all(fn.exists() for fn in out_fns.values()) and not overwrite:
             print(name, 'skipping, already exists')
             continue
 
+        print(name, 'computing features...', flush=True)
         if backend == 'python':
             python_features(feature_dir / image_fn, out_fns)
         else:
@@ -140,6 +141,9 @@ def main():
                         help='features stage: Python port or the original MATLAB code')
     parser.add_argument('--matlab-cmd', default=os.environ.get('DNFFA_MATLAB', 'matlab'),
                         help='MATLAB (or octave-cli) executable for --backend matlab')
+    parser.add_argument('--skip-test', action='store_true',
+                        help='features stage: only the subjects\' train sets, not the shared test set '
+                             '(for running subjects as parallel jobs)')
     args = parser.parse_args()
     ds = datasets.from_args(parser, args)
 
@@ -148,7 +152,8 @@ def main():
     if args.stage == 'export':
         export_images(ds, feature_dir, args.subjects)
     elif args.stage == 'features':
-        compute_features(ds, feature_dir, args.subjects, args.overwrite, args.backend, args.matlab_cmd)
+        compute_features(ds, feature_dir, args.subjects, args.overwrite, args.backend, args.matlab_cmd,
+                         args.skip_test)
     else:
         encode(ds, feature_dir, ds.analysis_dir(config.ENCODING_SUBDIR), args.subjects, args.rois, args.overwrite)
 

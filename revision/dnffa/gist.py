@@ -59,11 +59,20 @@ def block_average(x, n_blocks):
     return y
 
 
-def local_features(img, G, n_blocks):
-    """localFeatures.m: block-averaged Gabor energy of one grayscale image, flattened as vC(:)."""
+def local_features(img, G, n_blocks, out=None):
+    """localFeatures.m: block-averaged Gabor energy of one grayscale image, flattened as vC(:).
+
+    Filters one Gabor at a time into ``out`` (a reusable G-shaped float buffer) rather than
+    allocating (n, n, n_filters) complex temporaries per image, which is very slow on nodes
+    under memory pressure.
+    """
+    if out is None:
+        out = np.empty(G.shape)
     img = img - img.mean()
-    ig = np.abs(np.fft.ifft2(np.fft.fft2(img)[:, :, None] * G, axes=(0, 1)))
-    return block_average(ig, n_blocks).flatten(order='F')
+    F = np.fft.fft2(img)
+    for i in range(G.shape[2]):
+        out[:, :, i] = np.abs(np.fft.ifft2(F * G[:, :, i]))
+    return block_average(out, n_blocks).flatten(order='F')
 
 
 def compute_gabor_and_gist_features(images, n_blocks=N_BLOCKS,
@@ -77,7 +86,8 @@ def compute_gabor_and_gist_features(images, n_blocks=N_BLOCKS,
         raise ValueError(f'images must be square, got {images.shape[1:3]}')
 
     # (n_features, n_images), as in MATLAB
-    features = np.stack([local_features(np.asarray(im, dtype=np.float64).mean(axis=2), G, n_blocks)
+    buf = np.empty(G.shape)
+    features = np.stack([local_features(np.asarray(im, dtype=np.float64).mean(axis=2), G, n_blocks, buf)
                          for im in images], axis=1)
 
     # pca.m: top eigenvectors of features @ features.T (no centering), via SVD
