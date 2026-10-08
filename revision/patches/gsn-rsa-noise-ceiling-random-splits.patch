@@ -1,0 +1,70 @@
+diff --git a/gsn/rsa_noise_ceiling.py b/gsn/rsa_noise_ceiling.py
+index 3a5fa17..c657787 100644
+--- a/gsn/rsa_noise_ceiling.py
++++ b/gsn/rsa_noise_ceiling.py
+@@ -302,11 +302,11 @@ def rsa_noise_ceiling(data, opt = None):
+     elif opt['mode'] == 0:
+         # calculate the number of trials to put into the two splits
+         if opt['splitmode'] == 0:
+-            splitnums = [np.floor(ntrial / 2)]
++            splitnums = [ntrial // 2]
+         elif opt['splitmode'] == 1:
+-            splitnums = np.unique([2**i for i in range(int(np.floor(np.log2(ntrial / 2))))] + [np.floor(ntrial / 2)])
++            splitnums = [int(n) for n in np.unique([2**i for i in range(int(np.floor(np.log2(ntrial / 2))))] + [ntrial // 2])]
+         elif opt['splitmode'] == 2:
+-            splitnums = [np.floor(np.floor(ntrial / 2) / 2), np.floor(ntrial / 2)]
++            splitnums = [ntrial // 2 // 2, ntrial // 2]
+             splitnums = [num for num in splitnums if num > 0]
+ 
+         # calculate data split reliability
+@@ -359,23 +359,23 @@ def rsa_noise_ceiling(data, opt = None):
+ 
+         # otherwise, do the random-sampling approach
+         else:
+-            iicur = 1
++            iicur = 0
+             iimax = opt['simchunk']
+             datasplitr = np.zeros((len(splitnums), iimax))
+             while True:
+                 for nn in range(len(splitnums)):
+                     for si in range(iicur, iimax):
+-                        temp = deterministic_randperm(ntrial)
++                        temp = np.random.permutation(ntrial)
+                         datasplitr[nn, si] = nanreplace(opt['comparefun'](opt['rdmfun'](np.mean(data[:, :, temp[:splitnums[nn]]], axis=2)),
+                                                                         opt['rdmfun'](np.mean(data[:, :, temp[splitnums[nn]:splitnums[nn] * 2]], axis=2))))
+-                robustness = np.mean(np.abs(np.median(datasplitr, axis=1)) / (np.iqr(datasplitr, axis=1) / 2 / np.sqrt(datasplitr.shape[1])))
++                robustness = np.mean(np.abs(np.median(datasplitr, axis=1)) / (scipy.stats.iqr(datasplitr, axis=1) / 2 / np.sqrt(datasplitr.shape[1])))
+                 if robustness > opt['simthresh']:
+                     break
+                 iicur = iimax
+                 iimax += opt['simchunk']
+                 if iimax > opt['maxsimnum']:
+                     break
+-                datasplitr.resize((len(splitnums), iimax))
++                datasplitr = np.pad(datasplitr, ((0, 0), (0, iimax - datasplitr.shape[1])))
+ 
+             splitr = np.median(datasplitr[-1])  # median result for the "most trials" data split case
+ 
+@@ -385,7 +385,7 @@ def rsa_noise_ceiling(data, opt = None):
+         # calculate model-based split reliability
+         if opt['wantverbose']:
+             print('Calculating model split reliability...', end='')
+-        iicur = 1  # current sim number
++        iicur = 0  # current sim number
+         iimax = opt['simchunk']  # current targeted max
+         modelsplitr = np.zeros((len(opt['scs']), len(splitnums), iimax))
+ 
+@@ -412,11 +412,11 @@ def rsa_noise_ceiling(data, opt = None):
+             robustness = np.mean(robustness)
+             if robustness > opt['simthresh']:
+                 break
+-            iicur = iimax + 1
++            iicur = iimax
+             iimax += opt['simchunk']
+             if iimax > opt['maxsimnum']:
+                 break
+-            modelsplitr.resize((len(opt['scs']), len(splitnums), iimax))
++            modelsplitr = np.pad(modelsplitr, ((0, 0), (0, 0), (0, iimax - modelsplitr.shape[2])))
+ 
+         if opt['wantverbose']:
+             print('done.')

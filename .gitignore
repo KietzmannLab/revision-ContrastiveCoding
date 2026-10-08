@@ -197,3 +197,9 @@ dmypy.json
 
 # model weights and torch hub cache (see revision/README.md)
 weights/
+
+# GSN checkout (noise ceilings), cloned separately
+/GSN/
+
+# logs
+logs/

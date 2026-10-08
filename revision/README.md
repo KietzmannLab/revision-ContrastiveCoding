@@ -110,11 +110,21 @@ Data locations (NSD, …) are set in `jsputils/jsputils/paths.py`. Six environme
 | variable | default | purpose |
 |---|---|---|
 | `DNFFA_OUTPUT_DIR` | `revision/outputs` | root for `analysis_outputs/` and `figure_outputs/`. Point it at `PROJECT_DNFFA/NOTEBOOKS` to reuse results the notebooks already cached. |
-| `DNFFA_GSN_DIR` | `/home/jovyan/work/DropboxSandbox/GSN` | checkout of [GSN](https://github.com/cvnlab/GSN), needed for noise ceilings (`git clone https://github.com/cvnlab/GSN ~/GSN`; GSN is imported from the checkout, no install needed) |
+| `DNFFA_GSN_DIR` | `GSN` (repo root) | checkout of [GSN](https://github.com/cvnlab/GSN), needed for noise ceilings. GSN is imported from the checkout, no install needed; see [Noise ceilings (GSN)](#noise-ceilings-gsn) for setup. |
 | `DNFFA_DATA_DIR` | `revision/data` | stimulus sets (`vpnl-floc`, `classic-categ`), one folder per set. `dnffa.config` points jsputils' `image_set_dir()` here; `selective_unit_dir()` goes to `analysis_outputs/selective_units`. |
 | `DNFFA_IMAGENET_VAL_DIR` | `/share/klab/datasets/imagenet/val` | raw ImageNet val images (one folder per wnid), input to `make_imagenet_ffcv.py` |
 | `DNFFA_IMAGENET_FFCV` | `revision/data/imagenet1k-ffcv/imagenet1k_val_..._includes_index.ffcv` | ImageNet val set in FFCV format, used by 02. `dnffa.config` points jsputils' `ffcv_imagenet1k_valset()` here. |
 | `DNFFA_WEIGHTS_DIR` | `weights` (repo root) | VGGFace AlexNet and ImageNet readout checkpoints. `dnffa.config` points jsputils' `weight_savedir()` and `training_checkpoint_dir()` here. |
+
+### Noise ceilings (GSN)
+
+06 uses `rsa_noise_ceiling` from [GSN](https://github.com/cvnlab/GSN). The notebooks used an unreleased GSN version whose `rsa_noise_ceiling` took a list of `rdmfuns`; the public one takes a single `opt['rdmfun']`, which 06 handles by calling it once per function. The public Python port also has bugs in its split-half simulations (float trial counts used as slice indices, `np.iqr`, in-place `ndarray.resize`, 1-based loop counters, and a "random" permutation that returns the same split every time). `revision/patches/gsn-rsa-noise-ceiling-random-splits.patch` fixes them. Set it up once from the repo root:
+
+```bash
+git clone https://github.com/cvnlab/GSN GSN       # git-ignored; the default DNFFA_GSN_DIR
+git -C GSN checkout f33935e                       # commit the patch was made against
+git -C GSN apply ../revision/patches/gsn-rsa-noise-ceiling-random-splits.patch
+```
 
 ### Model weights
 
@@ -191,7 +201,6 @@ Scripts 03, 04, 06 and 07 take `--dataset {nsd,laion}` (default `nsd`, which is 
 03 extracts DNN features on `cuda:0`, so run it on a GPU node. The other steps run on CPU.
 
 ```bash
-export DNFFA_GSN_DIR=~/GSN                    # git clone https://github.com/cvnlab/GSN ~/GSN
 GPU="srun -p klab-gpu --gres=gpu:1 -c 16 --mem=64G ~/.conda/envs/revision-cu128/bin/python"
 
 # 03: encoding models (the first run also builds the beta and image caches)

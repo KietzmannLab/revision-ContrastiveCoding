@@ -24,8 +24,9 @@ OUTPUT_DIR = Path(os.environ.get('DNFFA_OUTPUT_DIR', REVISION_DIR / 'outputs'))
 ANALYSIS_DIR = OUTPUT_DIR / 'analysis_outputs'
 FIGURE_DIR = OUTPUT_DIR / 'figure_outputs'
 
-# Location of the GSN package (https://github.com/cvnlab/GSN), used for noise ceilings.
-GSN_DIR = os.environ.get('DNFFA_GSN_DIR', '/home/jovyan/work/DropboxSandbox/GSN')
+# Checkout of the GSN package (https://github.com/cvnlab/GSN) with
+# ``revision/patches/gsn-rsa-noise-ceiling-random-splits.patch`` applied, used for noise ceilings.
+GSN_DIR = os.environ.get('DNFFA_GSN_DIR', str(REPO_DIR / 'GSN'))
 
 IMAGENET_CLASS_LABELS = REPO_DIR / 'PROJECT_DNFFA' / 'NOTEBOOKS' / 'imagenet_class_labels.json'
 
