@@ -119,6 +119,9 @@ LESIONING_SUBDIR = '2-Lesioning'
 # ---------------------------------------------------------------------------
 
 MODEL_NAME = 'alexnet-barlow-twins'
+# jsputils initializes untrained ('-random') models without a seed. 03 and 08 seed torch with this
+# before loading one, so all their runs (and parallel jobs) use the same untrained weights.
+RANDOM_MODEL_SEED = 0
 FLOC_IMAGESET = 'vpnl-floc'
 FDR_P = 0.05
 

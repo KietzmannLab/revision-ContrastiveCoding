@@ -11,7 +11,7 @@ revision/
 │   ├── datasets.py            # --dataset {nsd,laion} for scripts 03, 04, 06, 07
 │   ├── gist.py                # Python port of the MATLAB Gabor / GIST-PC features (HELPERS/Code-GistModel)
 │   ├── plotting.py            # despine/layer-axis styling, scatter_corr, noise-ceiling band
-│   └── stats.py               # finite-masked Pearson r, paired t-tests vs. first model
+│   └── stats.py               # finite-masked Pearson r, paired t-tests vs. first model, per-image swap permutation tests
 └── scripts/
     ├── download_models.py        # pre-download public model weights (run once)
     ├── make_imagenet_ffcv.py     # write the ImageNet val set to FFCV for 02 (run once)
@@ -22,7 +22,8 @@ revision/
     ├── 04_encoding_plots.py      # 4-Encoding-Plots.ipynb     -> Figure 4
     ├── 05_content_channeling.py  # 5-Content-Channeling.ipynb -> Figure 5
     ├── 06_noise_ceilings.py      # 6-NoiseCeilings.ipynb
-    └── 07_low_level_models.py    # 7-LowLevelModels.ipynb
+    ├── 07_low_level_models.py    # 7-LowLevelModels.ipynb
+    └── 08_encoding_permutation.py  # single-subject permutation tests of the Fig. 4 comparisons (new)
 ```
 
 ## Setup
@@ -196,7 +197,7 @@ encoder = classes.EncodingProcedure(ROI, DNN, method='lasso', positive=True, alp
 
 ### Running the encoding analyses (Fig. 4) on LAION-fMRI
 
-Scripts 03, 04, 06 and 07 take `--dataset {nsd,laion}` (default `nsd`, which is unchanged). With `--dataset laion` they use the subjects, ROIs and image sets in the table below, and read/write sibling folders with a `-laion` suffix (`analysis_outputs/3-Encoding-laion`, `3c-NoiseCeilings-laion`, `3d-LowLevel-laion`, `figure_outputs/Figure4-Encoding-laion`, `NoiseCeilings-laion`), so NSD and LAION results never mix. `--rois` / `--subjects` default to all of the dataset's ROIs / subjects; NSD-only names such as `FBA-1` are rejected.
+Scripts 03, 04, 06, 07 and 08 take `--dataset {nsd,laion}` (default `nsd`, which is unchanged). With `--dataset laion` they use the subjects, ROIs and image sets in the table below, and read/write sibling folders with a `-laion` suffix (`analysis_outputs/3-Encoding-laion`, `3c-NoiseCeilings-laion`, `3d-LowLevel-laion`, `figure_outputs/Figure4-Encoding-laion`, `NoiseCeilings-laion`), so NSD and LAION results never mix. `--rois` / `--subjects` default to all of the dataset's ROIs / subjects; NSD-only names such as `FBA-1` are rejected.
 
 03 extracts DNN features on `cuda:0`, so run it on a GPU node. The other steps run on CPU.
 
@@ -220,7 +221,43 @@ python revision/scripts/06_noise_ceilings.py --dataset laion
 
 # 04: Figure 4 (add --skip-ols if the OLS run above was skipped)
 python revision/scripts/04_encoding_plots.py --dataset laion
+
+# 08: single-subject permutation tests of the Fig. 4 comparisons
+$GPU revision/scripts/08_encoding_permutation.py predict --dataset laion
+srun -p klab-cpu -c 16 --mem=32G env OPENBLAS_NUM_THREADS=16 \
+    ~/.conda/envs/revision/bin/python revision/scripts/08_encoding_permutation.py test --dataset laion
 ```
+
+#### Single-subject statistics (08)
+
+Fig. 4 tests contrastive vs. each alternative model with paired t-tests across subjects. With LAION-fMRI's 5 subjects, 08 tests each subject on its own instead:
+
+- **Models:** the fits 04 plots, i.e. each model's best layer on the validation set, with the ROI's preferred-domain units for the Barlow Twins models. `predict` refits them (same data, mapper and seed as 03 / 07; each refit is checked against the 03/07 CSV score). The untrained model only matches if 03 was run with the seeded init (see [Differences from the notebooks](#differences-from-the-notebooks)); results from an older 03 run give refit warnings for it, and 03 has to be rerun for that model and caches the test-set predictions in `analysis_outputs/3e-Permutation-laion/predictions`. Only `predict` needs the GPU.
+- **Null:** for each subject, ROI, metric and alternative model, the two models' predictions are swapped independently per test image with probability 0.5, and both models' correlations with the brain data are recomputed (for veRSA: both predicted RDMs). 10,000 permutations by default (`--n-perm`).
+- **p-value:** one-sided, the share of permuted differences r(contrastive) − r(alternative) at least as large as the observed one, (1 + #{null ≥ observed}) / (1 + n_perm).
+- **Correction:** Bonferroni with 04's count (30 tests for LAION), within each subject and metric.
+- **Outputs:** `permutation-tests.csv` (one row per test) and `permutation-nulls.npz` in the analysis folder. In `figure_outputs/Figure4-Permutation-laion`: `permutation-best-layers-{metric}-paper-style.tiff` (04's paper-style Fig. 4, with each bracket labelled with the number of subjects where contrastive > that model, and filled / open dots for significant / non-significant subjects), `permutation-best-layers-{metric}-per-subject.tiff` (the same layout with one row per subject, that subject's noise ceiling and a bracket for each significant test), `permutation-differences-{metric}.tiff` (every subject's observed difference per ROI and model, with the number of significant subjects) and `permutation-nulls-{metric}-{ROI}.tiff` (null histograms for the example ROIs).
+- **Parallel runs:** the slow step is rerunning 03 for the untrained model (~3 h in one job). Thanks to the fixed seed, parallel jobs now fit the same network, so 03 can be split by subject or ROI. 03 extracts features per subject × ROI anyway, so splitting costs nothing extra. `08 predict` takes ~25 min for the DNNs and ~10 min for GistPC / Gabor (CPU only). It can be split with `--models` / `--subjects` / `--rois`; the jobs write separate files, and the shared test-response files are written atomically. Run `08 test` as one job once all predictions exist: it writes a single results file, and its matrix products already use all CPUs of the job (~10 min with 16).
+
+  ```bash
+  SRUN_GPU="srun -p klab-gpu --gres=gpu:1 -c 16 --mem=64G"
+  PY_GPU=~/.conda/envs/revision-cu128/bin/python
+  for subj in sub-01 sub-03 sub-05 sub-06 sub-07; do
+      $SRUN_GPU $PY_GPU revision/scripts/03_encoding.py --dataset laion --subjects $subj \
+          --model alexnet-barlow-twins-random --alpha 0.001 --overwrite &
+  done; wait
+  python revision/scripts/04_encoding_plots.py --dataset laion
+
+  for model in alexnet-barlow-twins alexnet-barlow-twins-random alexnet-vggface; do
+      $SRUN_GPU $PY_GPU revision/scripts/08_encoding_permutation.py predict --dataset laion --models $model &
+  done
+  srun -p klab-cpu -c 4 --mem=32G ~/.conda/envs/revision/bin/python \
+      revision/scripts/08_encoding_permutation.py predict --dataset laion --models GistPC Gabor &
+  wait
+  srun -p klab-cpu -c 16 --mem=32G env OPENBLAS_NUM_THREADS=16 ~/.conda/envs/revision/bin/python \
+      revision/scripts/08_encoding_permutation.py test --dataset laion
+  ```
+- **Speed:** a veRSA test (866 test images, 10k permutations) takes ~5 s on one core. Rebuilding each permuted RDM would take hours, so the sums in the Pearson r are written as quadratic forms in the swap mask instead. They give the same values as `pdist` on the swapped predictions to ~1e-14. The test stage is mostly matrix products: on the shared login node, OpenBLAS's default of one thread per core made them ~100× slower, so run it as a job with `OPENBLAS_NUM_THREADS` set to the job's CPU count.
 
 For one subject × ROI, 03 (one model, all layers and domains) took 4 min on an H100/RTX node, including building that subject's image cache; the 45 combinations take up to ~3 h per model. The three model runs can go in parallel; split further with `--subjects` / `--rois`.
 
@@ -245,6 +282,7 @@ Notes:
 The scripts are meant to reproduce the notebooks exactly: same parameters, same order of computations, same random-number usage, same output filenames. The only change that affects results is:
 
 - 3: `roi_list` listed `'VWFA-1'` twice and left out `'VWFA-2'`. This is treated as a typo, and the script uses the same 11 ROIs as notebooks 4, 6 and 7.
+- 3: the untrained model (`alexnet-barlow-twins-random`) is initialized after `torch.manual_seed(config.RANDOM_MODEL_SEED)`. jsputils does not seed it, so in the notebook every run (and every parallel job) drew a different untrained network, and 08 could not refit the same one. The seeded weights are identical in the pinned env and `revision-cu128`. The untrained model's selective units are still loaded from the cache written by 01, which was computed with 01's own unseeded draw.
 
 Fixes so the code runs against the current `jsputils`, with no effect on results:
 

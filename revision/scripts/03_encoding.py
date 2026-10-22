@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np  # noqa: E402
+import torch  # noqa: E402
 from fastprogress import progress_bar  # noqa: E402
 from jsputils import classes  # noqa: E402
 
@@ -49,6 +50,8 @@ def main():
     positive = args.method == 'lasso'
     alphas = [args.alpha] if args.method == 'lasso' else [None]
 
+    if 'random' in args.model:
+        torch.manual_seed(config.RANDOM_MODEL_SEED)
     DNN = classes.DNNModel(args.model)
     if 'vggface' not in args.model:
         DNN.find_selective_units(config.FLOC_IMAGESET, overwrite=False, verbose=False, FDR_p=config.FDR_P)
