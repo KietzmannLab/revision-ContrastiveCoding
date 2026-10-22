@@ -43,8 +43,34 @@ MODEL_COLORS = {
 }
 
 
+# Published Fig. 4 layout: face-trained model last, contrastive bar in the ROI's domain colour
+PAPER_MODEL_ORDER = ['alexnet-barlow-twins', 'alexnet-barlow-twins-random', 'GistPC', 'Gabor', 'alexnet-vggface']
+PAPER_MODEL_LABELS = {'alexnet-barlow-twins': 'Contrastive',
+                      'alexnet-barlow-twins-random': 'Untrained',
+                      'GistPC': 'GistPC',
+                      'Gabor': 'Gabor',
+                      'alexnet-vggface': 'Face-trained\nmodel'}
+PAPER_METRIC_TITLES = {'veUnivar': 'Univariate profile prediction', 'veRSA': 'Multivariate RDM prediction'}
+
+
 def is_face_roi(roi):
     return 'FFA' in roi or 'OFA' in roi
+
+
+def bonferroni_alpha(rois, alpha=0.05):
+    """One test per ROI and non-reference model; NSD: (3 * 4) + (8 * 3) = 36."""
+    n_face = sum(is_face_roi(roi) for roi in rois)
+    n_tests = (n_face * (len(MODEL_COLORS['face']) - 1) +
+               (len(rois) - n_face) * (len(MODEL_COLORS['non-face']) - 1))
+    return alpha / n_tests
+
+
+def best_layer_scores(df_roi, roi, model, roi_domain, metric):
+    """Per-subject scores of one model in one ROI; Barlow Twins models use the ROI's matching domain units."""
+    sel = df_roi['model_name'] == model
+    if 'barlow-twins' in model:
+        sel &= df_roi['domain'] == roi_domain[roi]
+    return df_roi[sel][metric].values
 
 
 # ---------------------------------------------------------------------------
@@ -148,11 +174,7 @@ def plot_full_layer_summaries(combined_df, noise_ceilings, savedir):
 
 def plot_best_layer_violins(df_max, noise_ceilings, savedir, ds, metrics=('veUnivar', 'veRSA')):
     """Fig. 4: test-set prediction per ROI for each model at its best (val-selected) layer."""
-    # one test per non-first model and ROI; NSD: (3 * 4) + (8 * 3) = 36
-    n_face = sum(is_face_roi(roi) for roi in ds.rois)
-    n_tests = (n_face * (len(MODEL_COLORS['face']) - 1) +
-               (len(ds.rois) - n_face) * (len(MODEL_COLORS['non-face']) - 1))
-    ttest_alpha = 0.05 / n_tests  # bonferroni
+    ttest_alpha = bonferroni_alpha(ds.rois)
 
     for metric in metrics:
         df = df_max[metric][['subj', 'ROI', 'model_name', 'domain', 'veUnivar', 'veRSA']]
@@ -164,11 +186,7 @@ def plot_best_layer_violins(df_max, noise_ceilings, savedir, ds, metrics=('veUni
 
             model_data = []
             for model in these_colors:
-                if 'barlow-twins' in model:
-                    sel = (df_roi['model_name'] == model) & (df_roi['domain'] == ds.roi_domain[roi])
-                else:
-                    sel = df_roi['model_name'] == model
-                model_data.append(df_roi[sel][metric].values)
+                model_data.append(best_layer_scores(df_roi, roi, model, ds.roi_domain, metric))
 
                 report = ('vggface' in model or
                           (model == 'alexnet-barlow-twins' and
@@ -197,6 +215,75 @@ def plot_best_layer_violins(df_max, noise_ceilings, savedir, ds, metrics=('veUni
 
         plt.tight_layout()
         save(savedir / f'encoding-best-layers-{metric}.tiff')
+
+
+def plot_best_layer_bars(df_max, noise_ceilings, savedir, ds, metrics=('veUnivar', 'veRSA')):
+    """Fig. 4 as published: example ROIs only, mean bars with subject dots, face-trained model last.
+
+    Same data and t-tests (incl. the Bonferroni count over all ROIs) as ``plot_best_layer_violins``.
+    """
+    ttest_alpha = bonferroni_alpha(ds.rois)
+    rois = [roi for roi in EXAMPLE_ROIS if roi in ds.rois]
+    rng = np.random.default_rng(0)  # dot jitter; keeps the global random state used later untouched
+    step = 0.025  # vertical spacing of the significance bars
+
+    for metric in metrics:
+        df = df_max[metric]
+        panels = []
+        for roi in rois:
+            df_roi = df[df['ROI'] == roi]
+            models = [m for m in PAPER_MODEL_ORDER if m in MODEL_COLORS['face' if is_face_roi(roi) else 'non-face']]
+            model_data = [best_layer_scores(df_roi, roi, m, ds.roi_domain, metric) for m in models]
+            panels.append((roi, models, model_data, nsd.noise_ceiling_range(noise_ceilings, roi, metric)))
+
+        # shared y range: significance bars sit above the highest noise ceiling / data point
+        all_vals = np.concatenate([np.concatenate(data) for _, _, data, _ in panels])
+        data_top = max(np.nanmax(all_vals), max(nc[1] for *_, nc in panels))
+        max_pairs = max(len(models) - 1 for _, models, _, _ in panels)
+        bars_bottom = data_top + 0.05
+        if bars_bottom + step * (max_pairs - 1) > 0.98:  # would collide with the 1.0 gridline
+            bars_bottom = max(bars_bottom, 1.04)
+        bars_top = bars_bottom + step * (max_pairs - 1)
+        ylim = [min(-0.05, np.nanmin(all_vals) - 0.05), bars_top + 0.05]
+
+        fig, axs = plt.subplots(1, len(panels), figsize=(4 * len(panels), 6), sharey=True,
+                                gridspec_kw={'width_ratios': [len(models) for _, models, _, _ in panels]})
+        for ax, (roi, models, model_data, nc_range) in zip(np.atleast_1d(axs), panels):
+            n_models = len(models)
+            for i, (model, data) in enumerate(zip(models, model_data)):
+                if model == 'alexnet-barlow-twins':
+                    color = config.DOMAIN_COLORS[ds.roi_domain[roi]]
+                else:
+                    color = MODEL_COLORS['face'][model]
+                face_trained = model == 'alexnet-vggface'
+                ax.bar(i, np.nanmean(data), width=0.7, color=color, alpha=0.6 if face_trained else 1,
+                       edgecolor='k' if face_trained else 'none', linestyle='--', linewidth=1, zorder=2)
+                ax.scatter(i + rng.uniform(-0.08, 0.08, len(data)), data, s=10, color='dimgray', zorder=3)
+
+            noise_ceiling_band(ax, nc_range, n_models, zorder=0)
+            ax.hlines(np.arange(0.2, 1.01, 0.2), -0.5, n_models - 0.5, 'k', linewidth=0.5, zorder=1)
+            ax.hlines(0, -0.5, n_models - 0.5, 'k', linewidth=1, zorder=1)
+
+            significant_pairs, _ = pairwise_ttest_with_first(model_data, alpha=ttest_alpha)
+            for k, pair in enumerate(significant_pairs):
+                y = bars_top - k * step
+                ax.plot(pair, [y, y], color='k', lw=0.75)
+
+            ax.set_title(roi, fontsize=16)
+            ax.set_xlim(-0.6, n_models - 0.4)
+            ax.set_ylim(ylim)
+            ax.set_xticks(range(n_models))
+            ax.set_xticklabels([PAPER_MODEL_LABELS[m] for m in models], rotation=45, ha='right', fontsize=12)
+            ax.set_yticks(np.arange(0, 1.01, 0.2))
+            ax.tick_params(length=0, labelsize=12)
+            despine(ax)
+
+        first = np.atleast_1d(axs)[0]
+        first.set_ylabel('Model-brain correlation (r)', fontsize=14)
+        first.text(-0.4, panels[0][3][1] - 0.01, 'Noise ceiling range', fontsize=8, color='dimgray', va='top')
+        fig.suptitle(PAPER_METRIC_TITLES[metric], fontsize=18, x=0.02, ha='left')
+        plt.tight_layout()
+        save(savedir / f'encoding-best-layers-{metric}-paper-style.tiff')
 
 
 def plot_ols_vs_lasso(combined_df_ols, noise_ceilings, savedir, roi_domain, model_name='alexnet-barlow-twins'):
@@ -283,6 +370,7 @@ def main():
     df_max = {metric: find_max_score_layers(combined_df, metric) for metric in metrics}
 
     plot_best_layer_violins(df_max, noise_ceilings, savedir, ds)
+    plot_best_layer_bars(df_max, noise_ceilings, savedir, ds)
 
     if not args.skip_ols:
         loaddir_ols = loaddir / 'alexnet-barlow-twins-ols'
