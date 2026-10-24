@@ -23,7 +23,8 @@ revision/
     ├── 05_content_channeling.py  # 5-Content-Channeling.ipynb -> Figure 5
     ├── 06_noise_ceilings.py      # 6-NoiseCeilings.ipynb
     ├── 07_low_level_models.py    # 7-LowLevelModels.ipynb
-    └── 08_encoding_permutation.py  # single-subject permutation tests of the Fig. 4 comparisons (new)
+    ├── 08_encoding_permutation.py  # single-subject permutation tests of the Fig. 4 comparisons (new)
+    └── 09_generalization.py      # Fig. 4 on the re:vision generalization splits of LAION-fMRI (new)
 ```
 
 ## Setup
@@ -276,6 +277,70 @@ Notes:
 - **Fig. 4 statistics:** the Bonferroni correction counts one test per ROI and non-reference model: 36 for NSD as in the paper, 30 for LAION's 9 ROIs (3 face ROIs × 4 + 6 others × 3).
 - **Volumetric data:** voxels are assigned to `lh`/`rh` by the sign of their world x coordinate. `EncodingProcedure` concatenates the two, so this does not affect results.
 - **Failed fits:** voxels with failed GLMsingle fits (NaN betas) are dropped from the ROI. The two sessions checked for sub-01 had none.
+
+### Generalization (09)
+
+09 tests whether the Fig. 4 result holds beyond the replication's image sets. It uses the [re:vision generalization methods](https://re-vision-initiative.org/generalization) with the predefined splits of `laion_fmri.splits` ([docs](https://laion-fmri.hebartlab.com/train_test_splits.html)). The Fig. 4 models are refit on each split's training images and tested on its held-out images:
+
+| method | splits | test set | reported score |
+|---|---|---|---|
+| 1: within-distribution | `tau` | ~1,170 images far from their nearest training images | test score |
+| 2: OOD clusters | `cluster_k5_0` … `cluster_k5_4` | one held-out CLIP k-means cluster (615–1,506 images) | mean over the 5 folds |
+| 3: OOD images | `ood` | the 64 `unusual` OOD images (`--ood-types`; `all` = all 371) | test score |
+| baseline | `random_0` … `random_4` | a random fifth of the pool | mean over the 5 folds |
+
+Each subject's own pool is used: its 1,121 shared + 4,712 unique regular images, plus the 371 shared OOD images. 09 only runs on LAION-fMRI. Changes from 03 / 07, all forced by the splits:
+
+- **Layer selection:** in the replication, each model's layer is the best one on a separate 1,000-image validation set. The splits have no validation set, so 09 holds out a seeded 20% of each split's training images (~930 images). The models are fit on the other 80%, the layer is selected on the held-out 20%, and that fit is scored on the test set. Test images never influence which layer is chosen. The validation images depend only on subject and split, so all models and ROIs share them.
+- **Repetitions:** the pools mix images shown 4× and 12× (plus a few with missing trials). Every image is represented by its first 4 trials (`laion.SPLIT_NREPS`), so training and test images have the same noise level. Images with fewer than 4 trials (≤ 5 per subject) are dropped. This also means the noise ceilings are for 4-trial averages, lower than the replication's 12-trial ones.
+- **GistPC:** the PCA is fit on the training images and applied to the test images. The original code fits a separate PCA on every image set (see [Differences from the notebooks](#differences-from-the-notebooks)). That can't work for the 64-image OOD test set, and it leaves train and test PCs unaligned. GistPC is therefore a somewhat stronger baseline here than in the replication.
+- **Gabor:** unchanged from 07: OLS on 7,680 features. The minimum-norm OLS solution predicts worst when the number of training images approaches the number of features. With ~3,700 training images instead of 1,000 it is much closer to that point, so Gabor scores drop (sub-01 FFA-1: r = 0.17 in the replication, 0.07 on `tau`). This makes Gabor a weaker baseline here than in the replication.
+- **Units:** the Barlow Twins models are fit only on the ROI's preferred-domain units (the only fits Fig. 4 shows); the face-trained model uses whole layers. Mappers and penalties are those of the 03 / 07 runs above: lasso α = 0.1 for the trained models, 0.001 for the untrained one, OLS for GistPC / Gabor.
+
+Statistics follow 04 and 08. The per-subject permutation tests swap the two models' predictions per test image. For the fold-based methods, the statistic is the fold-averaged difference r(contrastive) − r(alternative), and its null is the average of independent per-fold nulls (fold k uses seed + k). The Bonferroni count is the same as for Fig. 4 (30 tests). Paired t-tests across the 5 subjects are run as in 04.
+
+`scripts/run_generalization.sh` submits the whole pipeline as `sbatch` jobs (logs in `logs/generalization/`). At most 3 CPU jobs and 1 GPU job run at a time. Each CPU job uses 64 cores (`CPUS`), and the jobs are chained into three lanes, so each lane runs one job at a time:
+
+```
+GPU:    features (~30 min) ··························· (the fits wait for it)
+lane A: fit face-trained sub-01 -> sub-03 -> sub-06 ───────────┐
+lane B: lowlevel -> fit other models -> fit face-trained sub-05 ┼─> test
+lane C: noise ceilings -> fit face-trained sub-07 ──────────────┘
+```
+
+```bash
+bash revision/scripts/run_generalization.sh
+# settings via the environment, e.g.
+CPUS=128 MEM=400G bash revision/scripts/run_generalization.sh
+OOD_TYPES="unusual all" N_PERM=10000 bash revision/scripts/run_generalization.sh
+```
+
+Times measured with 64 cores per job:
+
+| job | time |
+|---|---|
+| `features` (GPU) | 9 min for all subjects and models |
+| `lowlevel` | 1.7 h for all subjects |
+| `noise-ceilings` | 12.6 h for all subjects (one process per subject) |
+| `fit`, other four models | ~40 min per subject (estimated from a 16-core run) |
+| `fit`, face-trained | ~3 h per subject (estimated from a 16-core benchmark of its largest layer); its whole conv layers have up to 65k units |
+
+A fresh run takes ~15 h because of the noise ceilings. Without them, lanes A and B take ~6 h. The `test` job adds ~1 h.
+
+Jobs depend on each other with `afterany`, so a failed job does not block the rest. Every stage skips outputs that already exist, so after a failure, fix the cause and run the script again; the `test` job lists any results that are still missing. Stages can also be run by hand with `--subjects`, `--rois`, `--models` and `--splits`, e.g. `09_generalization.py fit --subjects sub-01 --models alexnet-vggface --splits tau ood`.
+
+Outputs, in `analysis_outputs/3f-Generalization-laion`:
+
+- `features/`: DNN features (one `.npy` per subject, model, layer and unit set; ~8 GB per subject for the face-trained model's whole layers) and the Gabor features.
+- `results/`: one CSV per subject, ROI, split and model, with val and test scores for every layer.
+- `predictions/`: test-set predictions of the layers selected on the validation images, plus the test responses.
+- `noise-ceilings/`: one GSN noise ceiling per test set.
+- `generalization-scores.csv`: per method, subject, ROI and model, including the replication's Fig. 4 scores from 03 / 07 if they exist. `generalization-scores-per-test-set.csv` has every fold.
+- `group-ttests.csv`, and `permutation-tests-{method}.csv` with `permutation-nulls-{method}.npz`.
+
+Figures go to `figure_outputs/Figure4-Generalization-laion`. `generalization-summary-{metric}.tiff` shows every model's mean ± SEM per ROI for the replication and each method, with the noise-ceiling range. Each method's subfolder has 08's figures for that method: paper style, per subject, and differences.
+
+`fit` runs all fits of a model (layers × ROIs × splits) in one pool of `--n-jobs` threads (default: the job's CPUs), largest first. Lasso releases the GIL, so the threads run in parallel. Each fit is single-threaded: OpenBLAS is limited to one thread for the whole process, and OpenMP to one thread in each worker thread. Without these limits, every worker starts a team with one thread per core: a 64-core job then ran ~4,000 threads and was ~10–30× slower. Each concurrent face-trained conv-layer fit needs ~2 GB of memory.
 
 ## Differences from the notebooks
 

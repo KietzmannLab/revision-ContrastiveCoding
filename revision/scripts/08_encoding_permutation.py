@@ -234,7 +234,7 @@ def run_tests(ds, fits, pred_dir, subjects, rois, n_perm, seed):
     return pd.DataFrame(rows), nulls
 
 
-def plot_differences(results, savedir, subjects, rois):
+def plot_differences(results, savedir, subjects, rois, title_suffix=''):
     """Per ROI: each subject's observed difference (contrastive - alternative) and its null's 95th
     percentile; filled dots are significant after Bonferroni correction."""
     n_subj = len(subjects)
@@ -264,7 +264,7 @@ def plot_differences(results, savedir, subjects, rois):
             despine(ax)
         first = np.atleast_1d(axs)[0]
         first.set_ylabel('r(contrastive) - r(alternative)', fontsize=12)
-        fig.suptitle(f'{plots.PAPER_METRIC_TITLES[metric]}: single-subject permutation tests '
+        fig.suptitle(f'{plots.PAPER_METRIC_TITLES[metric]}{title_suffix}: single-subject permutation tests '
                      f'(filled: p < {df["alpha_bonferroni"].iloc[0]:.2g}; gray tick: null 95th percentile)',
                      fontsize=13, x=0.01, ha='left')
         plt.tight_layout()
@@ -364,7 +364,7 @@ def draw_bar_panel(ax, roi, models, heights, nc_range, brackets, bars_top, step,
     despine(ax)
 
 
-def plot_paper_style(results, noise_ceilings, savedir, subjects, rois, roi_domain):
+def plot_paper_style(results, noise_ceilings, savedir, subjects, rois, roi_domain, title_suffix=''):
     """04's paper-style Fig. 4 with the permutation tests: bars are subject means, each bracket is
     labelled with the number of subjects where contrastive > that model, filled dots are those subjects."""
     rois = [roi for roi in plots.EXAMPLE_ROIS if roi in rois]
@@ -389,7 +389,7 @@ def plot_paper_style(results, noise_ceilings, savedir, subjects, rois, roi_domai
         first = np.atleast_1d(axs)[0]
         first.set_ylabel('Model-brain correlation (r)', fontsize=14)
         first.text(-0.4, nc_ranges[0][1] - 0.01, 'Noise ceiling range', fontsize=8, color='dimgray', va='top')
-        fig.suptitle(plots.PAPER_METRIC_TITLES[metric], fontsize=18, x=0.02, ha='left')
+        fig.suptitle(plots.PAPER_METRIC_TITLES[metric] + title_suffix, fontsize=18, x=0.02, ha='left')
         fig.text(0.02, 0.01, f'Brackets: subjects with contrastive > model (permutation test, p < {alpha:.2g}, '
                  'Bonferroni). Filled dots: significant subjects; open dots: not significant.',
                  fontsize=10, color='dimgray')
@@ -397,7 +397,7 @@ def plot_paper_style(results, noise_ceilings, savedir, subjects, rois, roi_domai
         save(savedir / f'permutation-best-layers-{metric}-paper-style.tiff')
 
 
-def plot_paper_style_per_subject(results, noise_ceilings, savedir, subjects, rois, roi_domain):
+def plot_paper_style_per_subject(results, noise_ceilings, savedir, subjects, rois, roi_domain, title_suffix=''):
     """04's paper-style Fig. 4 for each subject (rows): that subject's scores and noise ceiling, with a
     bracket for each significant permutation test (as 04 draws the significant t-tests)."""
     rois = [roi for roi in plots.EXAMPLE_ROIS if roi in rois]
@@ -426,7 +426,8 @@ def plot_paper_style_per_subject(results, noise_ceilings, savedir, subjects, roi
                     ax.set_xticklabels([])
             axs[s, 0].set_ylabel(f'{subj}\nr', fontsize=14)
 
-        fig.suptitle(f'{plots.PAPER_METRIC_TITLES[metric]}: single subjects', fontsize=18, x=0.02, ha='left')
+        fig.suptitle(f'{plots.PAPER_METRIC_TITLES[metric]}{title_suffix}: single subjects', fontsize=18, x=0.02,
+                     ha='left')
         fig.text(0.02, 0.005, f'Brackets: contrastive > model (permutation test, p < {alpha:.2g}, Bonferroni). '
                  'Gray line: the subject\'s noise ceiling.', fontsize=10, color='dimgray')
         plt.tight_layout(rect=[0, 0.015, 1, 0.975])

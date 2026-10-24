@@ -196,24 +196,30 @@ def image_set_images(subj, imageset, image_size=None, laion_sub=None):
         if cache_fn.exists():
             return np.load(cache_fn)
 
+    _, trial_idx = trial_indices(subj, imageset)
+    images = _load_stimuli(subj, trial_idx[:, 0], image_size, laion_sub)
+
+    if cache_fn is not None:
+        _save_atomic(cache_fn, np.save, images)
+    return images
+
+
+def _load_stimuli(subj, trials, image_size=None, laion_sub=None):
+    """images x H x W x 3 (uint8) stimuli shown on the given trials (as displayed: RGB on the grey background)."""
     if laion_sub is None:
         from laion_fmri.subject import load_subject as _load
         initialize()
         laion_sub = _load(subj)
 
-    _, trial_idx = trial_indices(subj, imageset)
     images = None
-    for i, t in enumerate(trial_idx[:, 0]):
+    for i, t in enumerate(trials):
         img = laion_sub.images.get(int(t), as_displayed=True)
         if image_size is not None:
             img = img.resize((image_size, image_size))
         img = np.asarray(img, dtype=np.uint8)
         if images is None:  # preallocate once (stimuli are all the same size)
-            images = np.empty((len(trial_idx),) + img.shape, dtype=np.uint8)
+            images = np.empty((len(trials),) + img.shape, dtype=np.uint8)
         images[i] = img
-
-    if cache_fn is not None:
-        _save_atomic(cache_fn, np.save, images)
     return images
 
 
@@ -221,6 +227,78 @@ def load_images(subj, partitions, image_size=None):
     """Stimulus images for a subject, keyed by partition (no brain data loaded); cf. nsd.load_nsd_images."""
     return {partition: image_set_images(subj, imageset, image_size)
             for partition, imageset in partitions.items()}
+
+
+# ---------------------------------------------------------------------------
+# generalization splits (laion_fmri.splits)
+# ---------------------------------------------------------------------------
+
+# The split pools mix images shown 4x (unique and most shared images), 12x (shared-12rep) and a
+# few with missing trials. In the generalization analyses every image is represented by its first
+# SPLIT_NREPS trials, so all images have the same noise level; images with fewer trials are dropped.
+SPLIT_NREPS = 4
+
+
+def split_ids(subj, split, ood_types=None):
+    """Sorted (train, test) image names of a ``laion_fmri.splits`` split in the subject's pool."""
+    from laion_fmri.splits import get_train_test_ids
+    train, test = get_train_test_ids(split, pool=subj, ood_types=ood_types)
+    return np.sort(train), np.sort(test)
+
+
+def image_trials(subj, names, n_reps=SPLIT_NREPS):
+    """The names with at least ``n_reps`` trials, and their first ``n_reps`` trials (images x reps, chronological)."""
+    metadata = trial_table(subj)
+    rows = metadata.groupby('label').indices  # label -> row positions
+    kept = [name for name in names if len(rows.get(name, ())) >= n_reps]
+    trial_idx = np.array([np.sort(metadata.index.to_numpy()[rows[name]])[:n_reps] for name in kept],
+                         dtype=int).reshape(len(kept), n_reps)
+    return np.asarray(kept), trial_idx
+
+
+def split_pool_blocks(subj):
+    """The subject's full split pool (regular + OOD images) as {'shared': names, subj: names}, each sorted."""
+    regular, ood = split_ids(subj, 'ood')  # train: the pool's regular images, test: all OOD images
+    names = np.concatenate([regular, ood])
+    status = trial_table(subj).groupby('label')['unique_or_shared'].first()
+    shared = (status.loc[names] == 'shared').to_numpy()
+    return {'shared': np.sort(names[shared]), subj: np.sort(names[~shared])}
+
+
+def split_pool(subj):
+    """Names and (images x SPLIT_NREPS) trial indices of every image in the subject's split pool.
+
+    The pool holds the subject's regular images (1,121 shared + 4,712 unique, the pools of
+    ``laion_fmri.splits``) and the 371 shared OOD images. Shared images come first.
+    """
+    return image_trials(subj, np.concatenate(list(split_pool_blocks(subj).values())))
+
+
+def split_pool_images(subj, names, image_size=ENCODING_IMAGE_SIZE):
+    """images x H x W x 3 (uint8) stimuli of ``names`` from the subject's split pool.
+
+    Cached under ``analysis_outputs/laion-fmri``: the shared images once for all subjects
+    (``shared_split-pool_images-425.npy``), the unique images per subject.
+    """
+    where = {}
+    blocks = {}
+    for owner, block in split_pool_blocks(subj).items():
+        cache_fn = config.analysis_dir(CACHE_SUBDIR) / f'{owner}_split-pool_images-{image_size}.npy'
+        names_fn = cache_fn.with_name(f'{cache_fn.stem}_names.npy')
+        if not (cache_fn.exists() and names_fn.exists() and np.array_equal(np.load(names_fn), block)):
+            print(f'{subj}: loading {len(block)} {owner} split-pool images')
+            first_trial = trial_table(subj).groupby('label').indices
+            images = _load_stimuli(subj, [first_trial[name][0] for name in block], image_size)
+            _save_atomic(cache_fn, np.save, images)
+            _save_atomic(names_fn, np.save, block)
+        blocks[owner] = np.load(cache_fn, mmap_mode='r')
+        where.update({name: (owner, i) for i, name in enumerate(block)})
+
+    images = np.empty((len(names),) + blocks['shared'].shape[1:], dtype=np.uint8)
+    for i, name in enumerate(names):
+        owner, j = where[name]
+        images[i] = blocks[owner][j]
+    return images
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +415,16 @@ class LaionROI:
     def get_ncsnr_mask(self, threshold):
         self.ncsnr_threshold_ = threshold
         self.ncsnr_mask = self.ncsnr > threshold
+
+    def responses(self, trial_idx):
+        """images x reps x voxels betas on the given (images x reps) trials, lh then rh, ncsnr-masked.
+
+        Same voxels and order as ``nsd.roi_voxels(ROI, mean=False)`` on the encoding data.
+        """
+        betas = self.subject.load_betas()['betas']
+        y = np.asarray(betas[np.ix_(trial_idx.ravel(), self.voxel_idx['full'])], dtype=np.float32)
+        y = y.reshape(trial_idx.shape + (-1,))
+        return y if self.ncsnr_mask is None else y[..., self.ncsnr_mask]
 
     def load_encoding_data(self, partition_dict, image_size=None):
         """Fill brain_data, image_data and image_metadata for each partition.
